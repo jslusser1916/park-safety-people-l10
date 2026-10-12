@@ -15,7 +15,7 @@ A shared, database-backed EOS workspace for Park Construction's Safety & People 
 - Production records live in a Render-managed PostgreSQL database through `DATABASE_URL`; browser storage is not used.
 - Every authorized device reads and writes the same database, so a refresh, new browser, or application redeploy does not erase team data.
 - The table is created automatically at application startup. Seed data is inserted only when the database is empty.
-- The former Sites records are supplied once through the private `MIGRATION_PAYLOAD_BASE64` Render secret. Pilot data is never committed to the public source repository. After PostgreSQL has records, the payload is never reapplied and cannot overwrite live changes.
+- The former Sites records are supplied once through the private `MIGRATION_PAYLOAD_BASE64` Render secret. Operational data is never committed to the public source repository. After PostgreSQL has records, the payload is never reapplied and cannot overwrite live changes.
 - Status changes append dated history events used by the Command Center graphs.
 - Backups and retention are controlled by the Render PostgreSQL plan. Review that plan before using the dashboard as the system of record for sensitive or regulated information.
 
@@ -28,7 +28,7 @@ A shared, database-backed EOS workspace for Park Construction's Safety & People 
 
 Deploy through a Render Blueprint after this repository is pushed to GitHub. Render will install the locked dependencies, run `pnpm build`, start the app with `pnpm start`, and verify `/api/health`. The Blueprint uses the free plans by default; review current Render limits, database expiration/retention, and upgrade options before relying on it for long-term production use.
 
-Render assigns a public `onrender.com` URL, so this migration adds an application-level password gate. The username defaults to `park`; `DASHBOARD_PASSWORD` is a required Render secret and is never stored in Git. This is appropriate for a small pilot, but organization single sign-on and named user auditing should replace shared credentials before a broad rollout.
+Render assigns a public `onrender.com` URL, so this migration adds an application-level password gate. The username defaults to `park`; `DASHBOARD_PASSWORD` is a required Render secret and is never stored in Git. Organization single sign-on and named user auditing are recommended when the dashboard needs individual access control.
 
 ## Local development
 
@@ -60,7 +60,7 @@ Open `/api/health` to verify both the web application and database connection. A
 
 ## Operational notes
 
-- The GitHub repository contains application source only. Existing pilot records are transferred directly to Render as a temporary secret and are not published in Git history.
+- The GitHub repository contains application source only. Existing operational records are transferred directly to Render as a temporary secret and are not published in Git history.
 - Store the shared dashboard password in Park's approved password manager and rotate it in Render when team membership changes.
 - Do not delete the PostgreSQL instance during a normal app redeploy. A replacement database starts empty and would reseed from the migration file.
 - Before replacing or moving the database, create a PostgreSQL backup and restore it into the new instance.
