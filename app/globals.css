@@ -55,3 +55,7 @@ html{font-size:16px}.sidebar{width:280px;padding:24px 20px 20px}.main{margin-lef
 /* In-meeting IDS add/remove toggle */
 .ids-drop{transition:color .16s ease,background-color .16s ease,border-color .16s ease}.ids-drop.linked:hover{color:var(--red);background:var(--red-soft);border-color:#e9aaa4}
 
+/* Explicit Scorecard goal status and Rocks owner sorting */
+.score-value-status{display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0}.score-track-badge{display:flex;align-items:center;justify-content:center;gap:4px;border-radius:6px;padding:5px 6px;font-size:10px;font-weight:850;letter-spacing:.025em;white-space:nowrap}.score-track-badge.on-track{color:#17603f;background:var(--green-soft);border:1px solid #abd1ba}.score-track-badge.off-track{color:#a22f28;background:var(--red-soft);border:1px solid #e4aaa5}.rocks-toolbar label{display:flex;align-items:center;gap:7px}.rocks-toolbar select{min-width:180px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 10px}
+@media(max-width:800px){.score-row{grid-template-columns:1fr 1fr 108px 30px}.rocks-toolbar{align-items:stretch}.rocks-toolbar label{justify-content:space-between}.rocks-toolbar select{min-width:0;width:65%}}
+
