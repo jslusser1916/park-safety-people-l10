@@ -291,7 +291,17 @@ function Scorecard({ records, ownerName, upsert, trackStatus, open }: any) {
   const [week, setWeek] = useState(mondayISO());
   const weeks = Array.from({ length: 8 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - i * 7); return mondayISO(d); });
   const valueFor = (metricId: string, w: string) => values.find((v: Rec) => v.payload.metricId === metricId && v.payload.week === w);
-  const saveValue = async (metric: Rec, raw: string) => { if (raw === "") return; const existing = valueFor(metric.id, week); const value = Number(raw); const status = metric.payload.direction === "gte" ? value >= metric.payload.target ? "on-track" : "off-track" : value <= metric.payload.target ? "on-track" : "off-track"; const valueRecord = existing || { id: uid("value"), kind: "metric_value", payload: { metricId: metric.id, week, ownerId: metric.payload.ownerId }, sortKey: "", isSample: false, createdAt: Date.now(), updatedAt: Date.now() }; await trackStatus(valueRecord, status, { value, note: existing?.payload.note || "", metricId: metric.id, week, ownerId: metric.payload.ownerId }); };
+  const saveValue = async (metric: Rec, raw: string) => {
+    const existing = valueFor(metric.id, week);
+    if (raw.trim() === "") {
+      if (existing) await upsert({ ...existing, payload: { ...existing.payload, value: null, status: "unreviewed" } });
+      return;
+    }
+    const value = Number(raw);
+    const status = metric.payload.direction === "gte" ? value >= metric.payload.target ? "on-track" : "off-track" : value <= metric.payload.target ? "on-track" : "off-track";
+    const valueRecord = existing || { id: uid("value"), kind: "metric_value", payload: { metricId: metric.id, week, ownerId: metric.payload.ownerId }, sortKey: "", isSample: false, createdAt: Date.now(), updatedAt: Date.now() };
+    await trackStatus(valueRecord, status, { value, note: existing?.payload.note || "", metricId: metric.id, week, ownerId: metric.payload.ownerId });
+  };
   return <>
     <PageHead eyebrow="WEEKLY LEADING INDICATORS" title="Scorecard" subtitle="Keep 5–15 measurables that tell the team whether it is winning before the financials arrive." action="Add measurable" onAction={() => open()}/>
     <div className="toolbar"><label>Week of <select value={week} onChange={e => setWeek(e.target.value)}>{weeks.map(w => <option key={w} value={w}>{dateLabel(w)}</option>)}</select></label><span><CircleDot size={14}/> Values save when you leave the field</span></div>
@@ -340,7 +350,7 @@ function Meetings({ records, ownerName, upsert, trackStatus, openIssue }: any) {
   function linkedIssue(sourceId:string){return records.find((r:Rec)=>r.kind==="issue"&&r.payload.sourceId===sourceId&&r.payload.status!=="solved");}
   async function dropToIds(source:Rec,title:string,context:string){const existing=linkedIssue(source.id);if(!existing)await upsert({id:uid("issue"),kind:"issue",payload:{title,context,ownerId:source.payload.ownerId,priority:"",status:"open",resolution:"",sourceId:source.id,sourceKind:source.kind,sourceLabel:title}});}
   async function markMetric(metric:Rec,status:string,value?:number|null){const existing=valueFor(metric.id);const valueRecord=existing||{id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week,ownerId:metric.payload.ownerId},sortKey:"",isSample:false,createdAt:Date.now(),updatedAt:Date.now()};await trackStatus(valueRecord,status,{metricId:metric.id,week,ownerId:metric.payload.ownerId,value:value??existing?.payload.value??null,note:existing?.payload.note||""});}
-  async function saveMetric(metric:Rec,raw:string){if(raw==="")return;const value=Number(raw);const status=metric.payload.direction==="gte"?(value>=metric.payload.target?"on-track":"off-track"):(value<=metric.payload.target?"on-track":"off-track");await markMetric(metric,status,value);}
+  async function saveMetric(metric:Rec,raw:string){const existing=valueFor(metric.id);if(raw.trim()===""){if(existing)await upsert({...existing,payload:{...existing.payload,value:null,status:"unreviewed"}});return;}const value=Number(raw);const status=metric.payload.direction==="gte"?(value>=metric.payload.target?"on-track":"off-track"):(value<=metric.payload.target?"on-track":"off-track");await markMetric(metric,status,value);}
   async function solveIssue(issue:Rec){const resolution=(resolutions[issue.id]||"").trim();if(!resolution)return;await upsert({...issue,payload:{...issue.payload,resolution,status:"solved",solvedAt:new Date().toISOString()}});setResolutions(current=>({...current,[issue.id]:""}));}
   const dropButton=(source:Rec,title:string,context:string)=><button className={`ids-drop ${linkedIssue(source.id)?"linked":""}`} onClick={()=>dropToIds(source,title,context)}>{linkedIssue(source.id)?"In IDS":"Drop Down"}<ChevronRight size={15}/></button>;
 
