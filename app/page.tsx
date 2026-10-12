@@ -152,7 +152,7 @@ export default function Home() {
           <div><strong>Safety + People</strong><span>Level 10 command center</span></div>
           <button className="icon-btn mobile-close" onClick={() => setMenuOpen(false)}><X size={18}/></button>
         </div>
-        <div className="workspace-label"><ShieldCheck size={15}/> EOS PILOT WORKSPACE</div>
+        <div className="workspace-label"><ShieldCheck size={15}/> EOS LEADERSHIP WORKSPACE</div>
         <nav>{nav.map(item => { const Icon = item.icon; return <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { setView(item.id); setMenuOpen(false); }}><Icon size={18}/><span>{item.label}</span>{item.id === "issues" && byKind("issue").filter(i => i.payload.status !== "solved").length > 0 && <b>{byKind("issue").filter(i => i.payload.status !== "solved").length}</b>}</button>; })}</nav>
         <div className="side-card"><div className="eyebrow">Next meeting</div><strong>{dateLabel(mondayISO(new Date(Date.now() + 7 * 86400000)))}</strong><span>60 minutes · Safety & People</span><button onClick={() => setView("meetings")}><Zap size={14}/> Open meeting mode</button></div>
         <div className="sidebar-foot"><span className="status-dot"/> Shared database connected</div>
@@ -170,7 +170,7 @@ export default function Home() {
 
         <div className="content">
           {error && <div className="error-banner"><AlertTriangle size={17}/>{error}<button onClick={load}>Try again</button></div>}
-          {records.some(r => r.isSample) && <div className="demo-banner"><Sparkles size={17}/><div><strong>Demo data is on</strong><span>Entries marked “Sample” are realistic placeholders. Edit or delete them as you add the team’s actual information.</span></div></div>}
+          {records.some(r => r.isSample) && <div className="sample-banner"><Sparkles size={17}/><div><strong>Sample entries are included</strong><span>Entries marked “Sample” are realistic placeholders. Edit or delete them as you add the team’s actual information.</span></div></div>}
           {view === "overview" && <Overview records={records} ownerName={ownerName} setView={setView} open={(kind: Kind) => setEditor({ kind })}/>}
           {view === "scorecard" && <Scorecard records={records} ownerName={ownerName} upsert={upsert} trackStatus={trackStatus} open={(record?: Rec) => setEditor({ kind: "metric", record })}/>}
           {view === "rocks" && <Rocks records={records} ownerName={ownerName} upsert={upsert} trackStatus={trackStatus} open={(record?: Rec) => setEditor({ kind: "rock", record })} remove={remove}/>}
