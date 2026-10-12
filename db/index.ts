@@ -5,6 +5,55 @@ import * as schema from "./schema";
 let client: ReturnType<typeof postgres> | undefined;
 let schemaReady: Promise<void> | undefined;
 
+type MigratedRecord = {
+  id: string;
+  kind: string;
+  payload: string;
+  sort_key?: string;
+  is_sample?: number | boolean;
+  created_at: number;
+  updated_at: number;
+};
+
+function readPrivateMigrationSeed(): MigratedRecord[] {
+  const encoded = process.env.MIGRATION_PAYLOAD_BASE64;
+  if (!encoded) return [];
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.error("The private migration payload could not be decoded.", error);
+    return [];
+  }
+}
+
+async function migratePrivateSeedIfEmpty(sql: ReturnType<typeof postgres>) {
+  const existingRows = (await sql`SELECT count(*)::text AS count FROM records`) as unknown as Array<{ count: string }>;
+  const [{ count }] = existingRows;
+  if (Number(count) > 0) return;
+
+  const migrationSeed = readPrivateMigrationSeed();
+  if (!migrationSeed.length) return;
+
+  for (const item of migrationSeed) {
+    await sql`
+      INSERT INTO records (id, kind, payload, sort_key, is_sample, created_at, updated_at)
+      VALUES (
+        ${item.id},
+        ${item.kind},
+        ${item.payload},
+        ${item.sort_key ?? ""},
+        ${Boolean(item.is_sample)},
+        ${item.created_at},
+        ${item.updated_at}
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+  }
+
+  console.log(`Imported ${migrationSeed.length} records from the private migration seed.`);
+}
+
 function getClient() {
   if (client) return client;
   const databaseUrl = process.env.DATABASE_URL;
@@ -25,17 +74,20 @@ export function getDb() {
 
 export function ensureDatabase() {
   const sql = getClient();
-  schemaReady ??= sql`
-    CREATE TABLE IF NOT EXISTS records (
-      id text PRIMARY KEY,
-      kind text NOT NULL,
-      payload text NOT NULL,
-      sort_key text NOT NULL DEFAULT '',
-      is_sample boolean NOT NULL DEFAULT false,
-      created_at bigint NOT NULL,
-      updated_at bigint NOT NULL
-    )
-  `.then(() => undefined);
+  schemaReady ??= (async () => {
+    await sql`
+      CREATE TABLE IF NOT EXISTS records (
+        id text PRIMARY KEY,
+        kind text NOT NULL,
+        payload text NOT NULL,
+        sort_key text NOT NULL DEFAULT '',
+        is_sample boolean NOT NULL DEFAULT false,
+        created_at bigint NOT NULL,
+        updated_at bigint NOT NULL
+      )
+    `;
+    await migratePrivateSeedIfEmpty(sql);
+  })();
   return schemaReady;
 }
 
