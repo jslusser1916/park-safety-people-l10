@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: park-safety-people-l10
+    runtime: node
+    plan: free
+    buildCommand: npm install --no-audit --no-fund && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22.13.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: park-safety-people-l10-db
+          property: connectionString
+      - key: DASHBOARD_USERNAME
+        value: park
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: MIGRATION_PAYLOAD_BASE64
+        sync: false
+
+databases:
+  - name: park-safety-people-l10-db
+    plan: free
+    databaseName: park_l10
+    user: park_l10
+
