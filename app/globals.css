@@ -52,3 +52,6 @@ html{font-size:16px}.sidebar{width:280px;padding:24px 20px 20px}.main{margin-lef
 @media(max-width:900px){.meeting-owner-filter{align-items:stretch;flex-direction:column}.meeting-owner-controls{align-items:stretch}.meeting-owner-controls label{flex:1}.meeting-owner-filter select{width:100%;min-width:0}}
 @media(max-width:700px){.scorecard-toolbar{align-items:stretch}.toolbar-filters{align-items:stretch;flex-direction:column;width:100%}.scorecard-toolbar label{justify-content:space-between}.scorecard-toolbar select{min-width:0;width:62%}.meeting-owner-controls{flex-direction:column}.meeting-owner-controls label{width:100%}}
 
+/* In-meeting IDS add/remove toggle */
+.ids-drop{transition:color .16s ease,background-color .16s ease,border-color .16s ease}.ids-drop.linked:hover{color:var(--red);background:var(--red-soft);border-color:#e9aaa4}
+
