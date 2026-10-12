@@ -64,6 +64,28 @@ async function normalizeSampleWorkspaceLanguage(sql: ReturnType<typeof postgres>
   `;
 }
 
+async function removeSampleRecords(sql: ReturnType<typeof postgres>) {
+  const removed = await sql`DELETE FROM records WHERE is_sample = true RETURNING id`;
+  if (removed.length) console.log(`Removed ${removed.length} sample records from the shared dashboard.`);
+}
+
+async function repairRockDefaults(sql: ReturnType<typeof postgres>) {
+  await sql`
+    UPDATE records
+    SET payload = jsonb_set(payload::jsonb, '{status}', '"on-track"'::jsonb, true)::text,
+        updated_at = ${Date.now()}
+    WHERE kind = 'rock'
+      AND COALESCE(payload::jsonb ->> 'status', '') NOT IN ('on-track', 'off-track', 'complete')
+  `;
+  await sql`
+    UPDATE records
+    SET payload = jsonb_set(payload::jsonb, '{milestones}', '[]'::jsonb, true)::text,
+        updated_at = ${Date.now()}
+    WHERE kind = 'rock'
+      AND COALESCE(jsonb_typeof(payload::jsonb -> 'milestones'), '') <> 'array'
+  `;
+}
+
 function getClient() {
   if (client) return client;
   const databaseUrl = process.env.DATABASE_URL;
@@ -98,6 +120,8 @@ export function ensureDatabase() {
     `;
     await migratePrivateSeedIfEmpty(sql);
     await normalizeSampleWorkspaceLanguage(sql);
+    await removeSampleRecords(sql);
+    await repairRockDefaults(sql);
   })();
   return schemaReady;
 }
