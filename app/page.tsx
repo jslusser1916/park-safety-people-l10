@@ -129,11 +129,16 @@ export default function Home() {
         if (occupying) await upsert({ ...occupying, payload: { ...occupying.payload, priority: "" } });
       }
     }
+    if (record.kind === "rock") {
+      const status = ["on-track", "off-track", "complete"].includes(record.payload.status) ? record.payload.status : "on-track";
+      await trackStatus(record, status, { progress: status === "complete" ? 100 : Number(record.payload.progress) || 0, ownerId: record.payload.ownerId });
+      setEditor(null); return;
+    }
     await upsert(record); setEditor(null);
   }
 
   const byKind = (kind: Kind) => records.filter(r => r.kind === kind);
-  const owners = byKind("owner");
+  const owners = sortOwnersByLastName(byKind("owner"));
   const owner = (id?: string) => owners.find(o => o.id === id)?.payload;
   const ownerName = (id?: string) => owner(id)?.name || "Unassigned";
   const searchResults = useMemo(() => {
@@ -192,10 +197,19 @@ function PageHead({ eyebrow, title, subtitle, action, onAction }: { eyebrow: str
 function Sample({ show }: { show?: boolean }) { return show ? <span className="sample-chip">Sample</span> : null; }
 function OwnerPill({ name }: { name: string }) { return <span className="owner-pill"><i>{name.split(" ").map(x => x[0]).slice(0, 2).join("")}</i>{name}</span>; }
 function Empty({ icon: Icon = ClipboardCheck, title, copy }: any) { return <div className="empty"><Icon size={28}/><strong>{title}</strong><span>{copy}</span></div>; }
+function ownerLastNameKey(name: string) {
+  const clean = String(name || "Unassigned").trim();
+  if (clean.includes(",")) return clean.toLocaleLowerCase();
+  const parts = clean.split(/\s+/); const last = parts.pop() || clean;
+  return `${last} ${parts.join(" ")}`.toLocaleLowerCase();
+}
+function sortOwnersByLastName(owners: Rec[]) {
+  return [...owners].sort((a, b) => ownerLastNameKey(a.payload.name).localeCompare(ownerLastNameKey(b.payload.name)));
+}
 function sortRecordsByOwner(records: Rec[], direction: string, ownerName: (id?: string) => string) {
   if (direction === "default") return records;
   return [...records].sort((a, b) => {
-    const comparison = ownerName(a.payload.ownerId).localeCompare(ownerName(b.payload.ownerId), undefined, { sensitivity: "base" });
+    const comparison = ownerLastNameKey(ownerName(a.payload.ownerId)).localeCompare(ownerLastNameKey(ownerName(b.payload.ownerId)), undefined, { sensitivity: "base" });
     return direction === "desc" ? -comparison : comparison;
   });
 }
@@ -270,11 +284,21 @@ function performanceFor(events: Rec[]) {
 
 function PerformanceAnalytics({ records, ownerName }: any) {
   const [period, setPeriod] = useState("current-quarter"); const [ownerId, setOwnerId] = useState("all");
-  const owners = records.filter((r: Rec) => r.kind === "owner"); const { start, end, mode } = periodRange(period);
+  const owners = sortOwnersByLastName(records.filter((r: Rec) => r.kind === "owner")); const { start, end, mode } = periodRange(period);
   const allEvents = records.filter((r: Rec) => r.kind === "status_event");
   const scopedEvents = allEvents.filter((e: Rec) => { const d = new Date(`${e.payload.date}T12:00:00`); return d >= start && d <= end && (ownerId === "all" || e.payload.ownerId === ownerId); });
   const events = scopedEvents.some((e: Rec) => !e.isSample) ? scopedEvents.filter((e: Rec) => !e.isSample) : scopedEvents;
-  const summary = performanceFor(events);
+  const currentStatusFallbacks = records.filter((record: Rec) => {
+    if (record.isSample || !["rock", "metric_value"].includes(record.kind)) return false;
+    const status = record.payload.status;
+    const dateValue = record.kind === "metric_value" ? record.payload.week : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
+    const date = new Date(`${dateValue}T12:00:00`);
+    return ["on-track", "off-track", "complete"].includes(status) && date >= start && date <= end && (ownerId === "all" || record.payload.ownerId === ownerId);
+  }).map((record: Rec) => {
+    const date = record.kind === "metric_value" ? record.payload.week : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
+    return { id:`current-${record.id}`,kind:"status_event" as Kind,payload:{entityKind:record.kind==="metric_value"?"scorecard":"rock",recordId:record.kind==="metric_value"?record.payload.metricId:record.id,ownerId:record.payload.ownerId,date,timestamp:new Date(record.updatedAt || record.createdAt).toISOString(),status:record.payload.status,progress:record.payload.progress},sortKey:"",isSample:false,createdAt:record.createdAt,updatedAt:record.updatedAt } as Rec;
+  });
+  const summary = performanceFor([...events, ...currentStatusFallbacks]);
   const bucketMap = new Map<string, Rec[]>();
   for (const event of events) {
     const d = new Date(`${event.payload.date}T12:00:00`);
@@ -327,8 +351,8 @@ function MeetingRatingTrends({ records }: any) {
 }
 
 function Scorecard({ records, ownerName, upsert, trackStatus, open }: any) {
-  const metrics = records.filter((r: Rec) => r.kind === "metric"); const values = records.filter((r: Rec) => r.kind === "metric_value"); const owners = records.filter((r: Rec) => r.kind === "owner");
-  const [week, setWeek] = useState(mondayISO()); const [ownerFilter, setOwnerFilter] = useState("all"); const [ownerSort, setOwnerSort] = useState("default");
+  const metrics = records.filter((r: Rec) => r.kind === "metric"); const values = records.filter((r: Rec) => r.kind === "metric_value"); const owners = sortOwnersByLastName(records.filter((r: Rec) => r.kind === "owner"));
+  const [week, setWeek] = useState(mondayISO()); const [ownerFilter, setOwnerFilter] = useState("all"); const [ownerSort, setOwnerSort] = useState("asc");
   const filteredMetrics = ownerFilter === "all" ? metrics : metrics.filter((metric: Rec) => metric.payload.ownerId === ownerFilter);
   const visibleMetrics = sortRecordsByOwner(filteredMetrics, ownerSort, ownerName);
   const weeks = Array.from({ length: 8 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - i * 7); return mondayISO(d); });
@@ -346,7 +370,7 @@ function Scorecard({ records, ownerName, upsert, trackStatus, open }: any) {
   };
   return <>
     <PageHead eyebrow="WEEKLY LEADING INDICATORS" title="Scorecard" subtitle="Keep 5–15 measurables that tell the team whether it is winning before the financials arrive." action="Add measurable" onAction={() => open()}/>
-    <div className="toolbar scorecard-toolbar"><div className="toolbar-filters"><label>Week of <select value={week} onChange={e => setWeek(e.target.value)}>{weeks.map(w => <option key={w} value={w}>{dateLabel(w)}</option>)}</select></label><label>Owner <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)}><option value="all">Whole team</option>{owners.map((owner: Rec) => <option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label>Sort <select value={ownerSort} onChange={e => setOwnerSort(e.target.value)}><option value="default">Existing order</option><option value="asc">Owner A–Z</option><option value="desc">Owner Z–A</option></select></label></div><span><CircleDot size={14}/> Values save when you leave the field</span></div>
+    <div className="toolbar scorecard-toolbar"><div className="toolbar-filters"><label>Week of <select value={week} onChange={e => setWeek(e.target.value)}>{weeks.map(w => <option key={w} value={w}>{dateLabel(w)}</option>)}</select></label><label>Owner <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)}><option value="all">Whole team</option>{owners.map((owner: Rec) => <option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label>Sort <select value={ownerSort} onChange={e => setOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div><span><CircleDot size={14}/> Values save when you leave the field</span></div>
     <div className="table-card"><div className="score-head"><span>MEASURABLE</span><span>OWNER</span><span>GOAL</span><span>8-WEEK TREND</span><span>THIS WEEK</span><span/></div>
       {visibleMetrics.map((m: Rec) => { const current = valueFor(m.id, week); const hit = current?.payload.value != null ? current.payload.status === "on-track" ? true : current.payload.status === "off-track" ? false : (m.payload.direction === "gte" ? current.payload.value >= m.payload.target : current.payload.value <= m.payload.target) : null; const series = [...weeks].reverse().map(w => valueFor(m.id,w)?.payload.value).filter((v:any)=>v!=null); const max = Math.max(m.payload.target, ...series, 1); return <div className="score-row" key={m.id}><div><strong>{m.payload.name}</strong><span>{m.payload.cadence} <Sample show={m.isSample}/></span></div><OwnerPill name={ownerName(m.payload.ownerId)}/><div className="goal">{m.payload.direction === "gte" ? "≥" : "≤"} {m.payload.target}{m.payload.unit === "%" ? "%" : ` ${m.payload.unit}`}</div><div className="sparkline">{[...weeks].reverse().map((w,i)=>{const v=valueFor(m.id,w)?.payload.value;return <i key={i} className={v==null ? "empty-bar" : ""} style={{height:`${v==null ? 8 : Math.max(12,(v/max)*38)}px`}}/>})}</div><div className="score-value-status"><div className={`value-cell ${hit === true ? "hit" : hit === false ? "miss" : ""}`}><input type="number" defaultValue={current?.payload.value ?? ""} key={`${m.id}-${week}-${current?.payload.value}`} onBlur={e => saveValue(m,e.target.value)} placeholder="—"/><span>{m.payload.unit === "%" ? "%" : ""}</span></div>{hit !== null&&<span className={`score-track-badge ${hit?"on-track":"off-track"}`}>{hit?<><CheckCircle2 size={13}/> On Track</>:<><AlertTriangle size={13}/> Off Track</>}</span>}</div><button className="icon-btn" onClick={() => open(m)}><Pencil size={15}/></button></div>; })}
       {!metrics.length ? <Empty icon={BarChart3} title="Build your scorecard" copy="Add the handful of weekly numbers that predict success."/> : !visibleMetrics.length && <Empty icon={Users} title="No measurables for this owner" copy="Choose another owner or assign a scorecard measurable to this team member."/>}
@@ -357,10 +381,10 @@ function Scorecard({ records, ownerName, upsert, trackStatus, open }: any) {
 
 function Rocks({ records, ownerName, upsert, trackStatus, open, remove }: any) {
   const rocks = records.filter((r: Rec) => r.kind === "rock");
-  const [ownerSort,setOwnerSort]=useState("default");
+  const [ownerSort,setOwnerSort]=useState("asc");
   const visibleRocks=sortRecordsByOwner(rocks,ownerSort,ownerName);
   return <><PageHead eyebrow="QUARTERLY PRIORITIES" title="Rocks" subtitle="One owner, one clear finish line, and milestone visibility for every 90-day priority." action="Add Rock" onAction={() => open()}/>
-    <div className="toolbar rocks-toolbar"><label>Sort <select value={ownerSort} onChange={e=>setOwnerSort(e.target.value)}><option value="default">Existing order</option><option value="asc">Owner A–Z</option><option value="desc">Owner Z–A</option></select></label><span><Users size={14}/> Organize quarterly priorities by accountable owner</span></div>
+    <div className="toolbar rocks-toolbar"><label>Sort <select value={ownerSort} onChange={e=>setOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label><span><Users size={14}/> Organized by accountable owner&apos;s last name</span></div>
     <div className="rock-grid">{visibleRocks.map((r: Rec) => {
       const status = ["on-track", "off-track", "complete"].includes(r.payload.status) ? r.payload.status : "on-track";
       const progress = Math.min(100, Math.max(0, Number(r.payload.progress) || 0));
@@ -386,15 +410,15 @@ function Headlines({ records, ownerName, open, remove }: any) {
 }
 
 function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }: any) {
-  const [running,setRunning]=useState(false),[section,setSection]=useState(0),[seconds,setSeconds]=useState(0),[reviewOwnerId,setReviewOwnerId]=useState("all"),[reviewOwnerSort,setReviewOwnerSort]=useState("default"),[ratings,setRatings]=useState<Record<string,number>>({}),[notes,setNotes]=useState<Record<number,string>>({}),[cascade,setCascade]=useState(""),[resolutions,setResolutions]=useState<Record<string,string>>({});
+  const [running,setRunning]=useState(false),[section,setSection]=useState(0),[seconds,setSeconds]=useState(0),[reviewOwnerId,setReviewOwnerId]=useState("all"),[reviewOwnerSort,setReviewOwnerSort]=useState("asc"),[ratings,setRatings]=useState<Record<string,number>>({}),[notes,setNotes]=useState<Record<number,string>>({}),[cascade,setCascade]=useState(""),[resolutions,setResolutions]=useState<Record<string,string>>({});
   const meetings=records.filter((r:Rec)=>r.kind==="meeting").sort((a:Rec,b:Rec)=>b.createdAt-a.createdAt);
-  const owners=records.filter((r:Rec)=>r.kind==="owner"), metrics=records.filter((r:Rec)=>r.kind==="metric"), values=records.filter((r:Rec)=>r.kind==="metric_value"), rocks=records.filter((r:Rec)=>r.kind==="rock"), todos=records.filter((r:Rec)=>r.kind==="todo"), headlines=records.filter((r:Rec)=>r.kind==="headline"), issues=records.filter((r:Rec)=>r.kind==="issue"&&r.payload.status!=="solved").sort(idsOrder);
+  const owners=sortOwnersByLastName(records.filter((r:Rec)=>r.kind==="owner")), metrics=records.filter((r:Rec)=>r.kind==="metric"), values=records.filter((r:Rec)=>r.kind==="metric_value"), rocks=records.filter((r:Rec)=>r.kind==="rock"), todos=records.filter((r:Rec)=>r.kind==="todo"), headlines=records.filter((r:Rec)=>r.kind==="headline"), issues=records.filter((r:Rec)=>r.kind==="issue"&&r.payload.status!=="solved").sort(idsOrder);
   const week=mondayISO(); const valueFor=(metricId:string)=>values.find((v:Rec)=>v.payload.metricId===metricId&&v.payload.week===week);
   const filterByReviewOwner=(record:Rec)=>reviewOwnerId==="all"||record.payload.ownerId===reviewOwnerId;
   const reviewMetrics=sortRecordsByOwner(metrics.filter(filterByReviewOwner),reviewOwnerSort,ownerName), reviewRocks=sortRecordsByOwner(rocks.filter(filterByReviewOwner),reviewOwnerSort,ownerName), reviewTodos=sortRecordsByOwner(todos.filter(filterByReviewOwner),reviewOwnerSort,ownerName);
   const ratedCount=owners.filter((owner:Rec)=>Number(ratings[owner.id])>=1&&Number(ratings[owner.id])<=10).length, allRated=owners.length>0&&ratedCount===owners.length;
   useEffect(()=>{if(!running)return;const timer=setInterval(()=>setSeconds(s=>s+1),1000);return()=>clearInterval(timer);},[running]);
-  async function conclude(){if(!allRated)return;const meetingRatings=owners.map((owner:Rec)=>({ownerId:owner.id,name:owner.payload.name,rating:ratings[owner.id]}));const rating=Math.round((meetingRatings.reduce((sum:number,item:any)=>sum+item.rating,0)/meetingRatings.length)*10)/10;await upsert({id:uid("meeting"),kind:"meeting",payload:{date:new Date().toISOString().slice(0,10),durationSeconds:seconds,rating,ratings:meetingRatings,agenda:agenda.map((a,i)=>({...a,notes:notes[i]||""})),cascade,status:"complete"}});setRunning(false);setSection(0);setSeconds(0);setReviewOwnerId("all");setReviewOwnerSort("default");setRatings({});setNotes({});setCascade("");}
+  async function conclude(){if(!allRated)return;const meetingRatings=owners.map((owner:Rec)=>({ownerId:owner.id,name:owner.payload.name,rating:ratings[owner.id]}));const rating=Math.round((meetingRatings.reduce((sum:number,item:any)=>sum+item.rating,0)/meetingRatings.length)*10)/10;await upsert({id:uid("meeting"),kind:"meeting",payload:{date:new Date().toISOString().slice(0,10),durationSeconds:seconds,rating,ratings:meetingRatings,agenda:agenda.map((a,i)=>({...a,notes:notes[i]||""})),cascade,status:"complete"}});setRunning(false);setSection(0);setSeconds(0);setReviewOwnerId("all");setReviewOwnerSort("asc");setRatings({});setNotes({});setCascade("");}
   function linkedIssue(sourceId:string){return records.find((r:Rec)=>r.kind==="issue"&&r.payload.sourceId===sourceId&&r.payload.status!=="solved");}
   async function toggleIds(source:Rec,title:string,context:string){const existing=linkedIssue(source.id);if(existing){await remove(existing,`Remove “${existing.payload.title}” from the IDS list? The original ${source.kind==="metric"?"Scorecard item":source.kind==="todo"?"To-Do":source.kind==="rock"?"Rock":"Headline"} will remain unchanged.`);return;}await upsert({id:uid("issue"),kind:"issue",payload:{title,context,ownerId:source.payload.ownerId,priority:"",status:"open",resolution:"",sourceId:source.id,sourceKind:source.kind,sourceLabel:title}});}
   async function markMetric(metric:Rec,status:string,value?:number|null){const existing=valueFor(metric.id);const valueRecord=existing||{id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week,ownerId:metric.payload.ownerId},sortKey:"",isSample:false,createdAt:Date.now(),updatedAt:Date.now()};await trackStatus(valueRecord,status,{metricId:metric.id,week,ownerId:metric.payload.ownerId,value:value??existing?.payload.value??null,note:existing?.payload.note||""});}
@@ -408,7 +432,7 @@ function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }
   : section===4 ? <div className="meeting-review-list">{reviewTodos.map((todo:Rec)=><article className="meeting-review" key={todo.id}><div className="review-main"><span className="review-type">TO-DO</span><strong>{todo.payload.title}</strong><small><OwnerPill name={ownerName(todo.payload.ownerId)}/> Due {dateLabel(todo.payload.dueDate)}</small></div><div className="review-status"><button className={todo.payload.status==="done"?"active done":""} onClick={()=>trackStatus(todo,"done",{completedAt:new Date().toISOString()})}><Check size={16}/> Done</button><button className={todo.payload.status!=="done"?"active bad":""} onClick={()=>trackStatus(todo,"open",{completedAt:null})}><X size={16}/> Not Done</button></div>{dropButton(todo,`To-Do not done: ${todo.payload.title}`,`Dropped from To-Do Review. Due ${dateLabel(todo.payload.dueDate)}.`)}</article>)}{!todos.length?<Empty icon={ListChecks} title="No To-Dos to review" copy="Add commitments as they are assigned."/>:!reviewTodos.length&&<Empty icon={Users} title="No To-Dos for this owner" copy="Choose another owner or return to the Whole team view."/>}</div>
   : section===5 ? <div className="ids-workspace"><div className="meeting-ids-header"><div><strong>{issues.filter((issue:Rec)=>idsRank(issue)).length} of 3 selected</strong><span>Assign 1, 2, and 3 to the next issues the group will discuss. Solving one frees its number for the next item.</span></div><button onClick={openIssue}><Plus size={16}/> Add IDS item</button></div>{issues.map((issue:Rec)=><article className={`ids-work-item ${idsRank(issue)?"ranked":""}`} key={issue.id}><div className={`issue-number ${idsRank(issue)?"ranked":""}`}>{idsRank(issue)||"—"}</div><div><div className="ids-work-head"><label className="ids-rank-control inline"><span>Discuss</span><select aria-label={`Discussion order for ${issue.payload.title}`} value={idsRank(issue)} onChange={e=>assignIdsRank(issue,e.target.value,records,upsert)}><option value="">Backlog</option><option value="1">1 — First</option><option value="2">2 — Second</option><option value="3">3 — Third</option></select></label>{issue.payload.sourceKind&&<span className="source-chip">From {issue.payload.sourceKind.replace("metric_value","scorecard")}</span>}</div><h3>{issue.payload.title}</h3><p>{issue.payload.context}</p><div className="ids-solve"><input value={resolutions[issue.id]||""} onChange={e=>setResolutions(current=>({...current,[issue.id]:e.target.value}))} placeholder="Record the decision or solution…"/><button disabled={!(resolutions[issue.id]||"").trim()} onClick={()=>solveIssue(issue)}><CheckCircle2 size={16}/> Mark solved</button></div></div></article>)}{!issues.length&&<Empty icon={CheckCircle2} title="IDS queue is clear" copy="Add an issue here or use Drop Down during the earlier review sections."/>}</div> : null;
 
-  const reviewOwnerFilter = [1,2,4].includes(section) ? <div className="meeting-owner-filter"><div><Users size={18}/><span>Review by owner</span></div><div className="meeting-owner-controls"><label><span>Show</span><select aria-label="Filter meeting review by owner" value={reviewOwnerId} onChange={e=>setReviewOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Sort</span><select aria-label="Sort meeting review by owner" value={reviewOwnerSort} onChange={e=>setReviewOwnerSort(e.target.value)}><option value="default">Existing order</option><option value="asc">Owner A–Z</option><option value="desc">Owner Z–A</option></select></label></div></div> : null;
+  const reviewOwnerFilter = [1,2,4].includes(section) ? <div className="meeting-owner-filter"><div><Users size={18}/><span>Review by owner</span></div><div className="meeting-owner-controls"><label><span>Show</span><select aria-label="Filter meeting review by owner" value={reviewOwnerId} onChange={e=>setReviewOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Sort</span><select aria-label="Sort meeting review by owner" value={reviewOwnerSort} onChange={e=>setReviewOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div></div> : null;
 
   return <><PageHead eyebrow="PARK'S 60-MINUTE WORKFLOW" title="Level 10 Meeting" subtitle="Review the live Scorecard, Rocks, and To-Dos; drop exceptions into IDS once; solve and record the decision."/>
     {!running ? <div className="meeting-launch"><div className="launch-visual"><ParkLogo/><div className="timer-ring"><strong>60</strong><span>MIN</span></div><span>Safety & People</span></div><div><span className="eyebrow">READY WHEN THE TEAM IS</span><h2>Run one connected meeting</h2><p>The agenda is tailored to Park&apos;s one-hour cadence. Statuses update the same shared records, anything dropped follows you into IDS, and the session is saved to permanent history.</p><div className="agenda-preview">{agenda.map((a,i)=><div key={a.name}><b>{i+1}</b><span>{a.name}</span><strong>{a.minutes}m</strong></div>)}</div><button className="primary-btn large" onClick={()=>setRunning(true)}><Zap size={18}/> Start today&apos;s meeting</button></div></div> :
