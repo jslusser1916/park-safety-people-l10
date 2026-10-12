@@ -54,6 +54,16 @@ async function migratePrivateSeedIfEmpty(sql: ReturnType<typeof postgres>) {
   console.log(`Imported ${migrationSeed.length} records from the private migration seed.`);
 }
 
+async function normalizeSampleWorkspaceLanguage(sql: ReturnType<typeof postgres>) {
+  await sql`
+    UPDATE records
+    SET payload = replace(payload, 'Pilot with two crews', 'Run with two crews'),
+        updated_at = ${Date.now()}
+    WHERE is_sample = true
+      AND payload LIKE '%Pilot with two crews%'
+  `;
+}
+
 function getClient() {
   if (client) return client;
   const databaseUrl = process.env.DATABASE_URL;
@@ -87,6 +97,7 @@ export function ensureDatabase() {
       )
     `;
     await migratePrivateSeedIfEmpty(sql);
+    await normalizeSampleWorkspaceLanguage(sql);
   })();
   return schemaReady;
 }
