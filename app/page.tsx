@@ -134,6 +134,11 @@ export default function Home() {
       await trackStatus(record, status, { progress: status === "complete" ? 100 : Number(record.payload.progress) || 0, ownerId: record.payload.ownerId });
       setEditor(null); return;
     }
+    if (record.kind === "todo") {
+      const status = record.payload.status === "done" ? "done" : "open";
+      await trackStatus(record, status, { ownerId: record.payload.ownerId, completedAt: status === "done" ? record.payload.completedAt || new Date().toISOString() : null });
+      setEditor(null); return;
+    }
     await upsert(record); setEditor(null);
   }
 
@@ -285,18 +290,24 @@ function performanceFor(events: Rec[]) {
 function PerformanceAnalytics({ records, ownerName }: any) {
   const [period, setPeriod] = useState("current-quarter"); const [ownerId, setOwnerId] = useState("all");
   const owners = sortOwnersByLastName(records.filter((r: Rec) => r.kind === "owner")); const { start, end, mode } = periodRange(period);
+  const isCurrentPeriod = !["last-month", "last-quarter"].includes(period);
   const allEvents = records.filter((r: Rec) => r.kind === "status_event");
   const scopedEvents = allEvents.filter((e: Rec) => { const d = new Date(`${e.payload.date}T12:00:00`); return d >= start && d <= end && (ownerId === "all" || e.payload.ownerId === ownerId); });
-  const events = scopedEvents.some((e: Rec) => !e.isSample) ? scopedEvents.filter((e: Rec) => !e.isSample) : scopedEvents;
+  const realScopedEvents = scopedEvents.some((e: Rec) => !e.isSample) ? scopedEvents.filter((e: Rec) => !e.isSample) : scopedEvents;
+  const currentTodoIds = new Set(records.filter((record: Rec) => record.kind === "todo" && !record.isSample).map((record: Rec) => record.id));
+  const events = realScopedEvents.filter((event: Rec) => event.payload.entityKind !== "todo" || currentTodoIds.has(event.payload.recordId));
   const currentStatusFallbacks = records.filter((record: Rec) => {
-    if (record.isSample || !["rock", "metric_value"].includes(record.kind)) return false;
+    if (record.isSample || !["rock", "metric_value", "todo"].includes(record.kind)) return false;
     const status = record.payload.status;
-    const dateValue = record.kind === "metric_value" ? record.payload.week : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
+    const dateValue = record.kind === "metric_value" ? record.payload.week : record.kind === "todo" ? record.payload.dueDate || new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10) : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
     const date = new Date(`${dateValue}T12:00:00`);
-    return ["on-track", "off-track", "complete"].includes(status) && date >= start && date <= end && (ownerId === "all" || record.payload.ownerId === ownerId);
+    const validStatus = record.kind === "todo" ? ["open", "done"].includes(status) : ["on-track", "off-track", "complete"].includes(status);
+    const belongsToPeriod = record.kind === "todo" ? isCurrentPeriod : date >= start && date <= end;
+    return validStatus && belongsToPeriod && (ownerId === "all" || record.payload.ownerId === ownerId);
   }).map((record: Rec) => {
-    const date = record.kind === "metric_value" ? record.payload.week : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
-    return { id:`current-${record.id}`,kind:"status_event" as Kind,payload:{entityKind:record.kind==="metric_value"?"scorecard":"rock",recordId:record.kind==="metric_value"?record.payload.metricId:record.id,ownerId:record.payload.ownerId,date,timestamp:new Date(record.updatedAt || record.createdAt).toISOString(),status:record.payload.status,progress:record.payload.progress},sortKey:"",isSample:false,createdAt:record.createdAt,updatedAt:record.updatedAt } as Rec;
+    const date = record.kind === "metric_value" ? record.payload.week : record.kind === "todo" ? record.payload.dueDate || new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10) : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
+    const entityKind = record.kind === "metric_value" ? "scorecard" : record.kind === "todo" ? "todo" : "rock";
+    return { id:`current-${record.id}`,kind:"status_event" as Kind,payload:{entityKind,recordId:record.kind==="metric_value"?record.payload.metricId:record.id,ownerId:record.payload.ownerId,date,timestamp:new Date(record.updatedAt || record.createdAt).toISOString(),status:record.payload.status,progress:record.payload.progress},sortKey:"",isSample:false,createdAt:record.createdAt,updatedAt:record.updatedAt } as Rec;
   });
   const summary = performanceFor([...events, ...currentStatusFallbacks]);
   const bucketMap = new Map<string, Rec[]>();
@@ -311,7 +322,7 @@ function PerformanceAnalytics({ records, ownerName }: any) {
     { key: "onTrack", label: "On track", color: "green" }, { key: "offTrack", label: "Off track", color: "red" },
   ] as const;
   return <section className="analytics-panel">
-    <div className="analytics-head"><div><span className="eyebrow">PERFORMANCE COMMAND CENTER</span><h2>Accountability trends</h2><p>One view of execution by team or owner—calculated from saved weekly status updates.</p></div><div className="analytics-filters"><label>Period<select value={period} onChange={e => setPeriod(e.target.value)}>{periodOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>View<select value={ownerId} onChange={e => setOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((o: Rec) => <option key={o.id} value={o.id}>{o.payload.name}</option>)}</select></label></div></div>
+    <div className="analytics-head"><div><span className="eyebrow">PERFORMANCE COMMAND CENTER</span><h2>Accountability trends</h2><p>Current cards reconcile saved item status with dated history; the graph shows recorded status history over time.</p></div><div className="analytics-filters"><label>Period<select value={period} onChange={e => setPeriod(e.target.value)}>{periodOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>View<select value={ownerId} onChange={e => setOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((o: Rec) => <option key={o.id} value={o.id}>{o.payload.name}</option>)}</select></label></div></div>
     <div className="analytics-cards">{series.map(item => <div className={`analytics-card ${item.color}`} key={item.key}><span>{item.label}</span><strong>{summary[item.key]}%</strong><small>{ownerId === "all" ? "Group" : ownerName(ownerId)} · {periodOptions.find(p => p[0] === period)?.[1]}</small></div>)}</div>
     {buckets.length ? <><div className="chart-legend">{series.map(item => <span key={item.key}><i className={item.color}/>{item.label}</span>)}</div><div className="bar-chart" aria-label="Performance percentages over time"><div className="chart-grid"><span>100%</span><span>50%</span><span>0%</span></div>{buckets.map(bucket => <div className="chart-bucket" key={bucket.key}><div className="bars">{series.map(item => <i key={item.key} className={item.color} title={`${item.label}: ${bucket[item.key]}%`} style={{ height: `${Math.max(2, bucket[item.key])}%` }}/>)}</div><span>{bucket.label}</span></div>)}</div></> : <div className="analytics-empty"><TrendingUp size={24}/><strong>No saved status history in this view yet</strong><span>Run the review in Meeting Mode or update a status to begin the trend.</span></div>}
     {events.some((e: Rec) => e.isSample) && <div className="sample-data-note"><Sample show/> Trend includes clearly labeled sample history until your team replaces it with actual updates.</div>}
