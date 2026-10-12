@@ -67,10 +67,44 @@ async function normalizeLegacyIssuePriorities() {
   }
 }
 
+async function migrateMisdatedScorecardWeek() {
+  const db = getDb();
+  const markerId = "system-scorecard-week-2026-10-12-to-2026-10-05";
+  const marker = await db.select({ id: records.id }).from(records).where(eq(records.id, markerId)).limit(1);
+  if (marker.length) return;
+
+  const sourceWeek = "2026-10-12";
+  const targetWeek = "2026-10-05";
+  const valueRows = await db.select().from(records).where(eq(records.kind, "metric_value"));
+  const parsed = valueRows.map((row) => ({ row, payload: JSON.parse(row.payload) as Record<string, unknown> }));
+  const targetMetricIds = new Set(parsed.filter(({ payload }) => payload.week === targetWeek).map(({ payload }) => String(payload.metricId || "")));
+  let moved = 0; let conflicts = 0;
+
+  for (const { row, payload } of parsed.filter(({ payload }) => payload.week === sourceWeek)) {
+    const metricId = String(payload.metricId || "");
+    if (!metricId || targetMetricIds.has(metricId)) { conflicts += 1; continue; }
+    await db.update(records).set({ payload: JSON.stringify({ ...payload, week: targetWeek }), updatedAt: Date.now() }).where(eq(records.id, row.id));
+    targetMetricIds.add(metricId); moved += 1;
+  }
+
+  const timestamp = Date.now();
+  await db.insert(records).values({
+    id: markerId,
+    kind: "status_event",
+    payload: JSON.stringify({ entityKind: "system", recordId: markerId, date: new Date(timestamp).toISOString().slice(0, 10), timestamp: new Date(timestamp).toISOString(), status: "complete", moved, conflicts }),
+    sortKey: "",
+    isSample: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }).onConflictDoNothing();
+  console.info(`Moved ${moved} Scorecard values from ${sourceWeek} to ${targetWeek}; ${conflicts} conflicts were preserved.`);
+}
+
 export async function GET() {
   await ensureDatabase();
   await seedIfEmpty();
   await normalizeLegacyIssuePriorities();
+  await migrateMisdatedScorecardWeek();
   const rows = await getDb().select().from(records).orderBy(records.sortKey, records.createdAt);
   return NextResponse.json(rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) })));
 }
