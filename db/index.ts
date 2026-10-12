@@ -86,6 +86,37 @@ async function repairRockDefaults(sql: ReturnType<typeof postgres>) {
   `;
 }
 
+async function clearIncorrectBobMetricValue(sql: ReturnType<typeof postgres>) {
+  const cleared = await sql`
+    WITH bob_owners AS (
+      SELECT id
+      FROM records
+      WHERE kind = 'owner'
+        AND lower(COALESCE(payload::jsonb ->> 'name', '')) LIKE 'bob%'
+    ), target_metrics AS (
+      SELECT id
+      FROM records
+      WHERE kind = 'metric'
+        AND lower(COALESCE(payload::jsonb ->> 'name', '')) LIKE '%corrective actions closed%time%'
+        AND payload::jsonb ->> 'ownerId' IN (SELECT id FROM bob_owners)
+    )
+    UPDATE records
+    SET payload = jsonb_set(
+          jsonb_set(payload::jsonb, '{value}', 'null'::jsonb, true),
+          '{status}',
+          '"unreviewed"'::jsonb,
+          true
+        )::text,
+        updated_at = ${Date.now()}
+    WHERE kind = 'metric_value'
+      AND payload::jsonb ->> 'metricId' IN (SELECT id FROM target_metrics)
+      AND payload::jsonb ->> 'week' = to_char(date_trunc('week', CURRENT_DATE)::date, 'YYYY-MM-DD')
+      AND payload::jsonb ->> 'value' = '2'
+    RETURNING id
+  `;
+  if (cleared.length) console.log(`Cleared ${cleared.length} incorrect current-week scorecard value for Bob.`);
+}
+
 function getClient() {
   if (client) return client;
   const databaseUrl = process.env.DATABASE_URL;
@@ -122,6 +153,7 @@ export function ensureDatabase() {
     await normalizeSampleWorkspaceLanguage(sql);
     await removeSampleRecords(sql);
     await repairRockDefaults(sql);
+    await clearIncorrectBobMetricValue(sql);
   })();
   return schemaReady;
 }
