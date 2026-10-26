@@ -13,6 +13,8 @@ A shared, database-backed EOS workspace for Park Construction's Safety & People 
 - Segue, Headlines, and the review sections no longer contain section-notes inputs. IDS can be marked solved without a decision/solution input; saved historical resolutions remain intact.
 - Scorecard, Rock Review, Headlines, To-Do Review, and IDS each provide a blank Add To-Do form. IDS-linked To-Dos also start with an empty commitment and owner rather than copying the issue wording.
 - Conclude shows the exact saved To-Dos assigned during that meeting, including owner, due date, and current status. The completed meeting retains an immutable assignment snapshot for later review.
+- Each IDS item supports multiple distinct To-Dos directly below the issue. The saved actions remain visible with individual edit controls, and saving leaves a blank form open for the next action. New actions always get new IDs rather than overwriting the first linked To-Do.
+- To-Do owner menus include **All Team** in Meeting Mode and the sidebar editor. This saves one shared commitment with its own Open/Done status; it does not add a fictitious member to the meeting-rating roll call. Shared ownership is displayed in the To-Do list and meeting recap, and Meeting Mode can filter To-Dos by All Team.
 - To-Dos have only **Open** and **Done** views, in both the sidebar and Meeting Mode. Previously archived records are classified by their saved completion status. Saving a meeting no longer archives incomplete commitments; they remain Open until checked Done.
 - Moving between meeting sections resets the page to the top. The Conclude recap can recover the pending meeting link from saved To-Dos after refreshing or returning from another page.
 

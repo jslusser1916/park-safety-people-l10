@@ -62,6 +62,10 @@ function timeLabel(seconds: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 function uid(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
+const ALL_TEAM_OWNER_ID = "all-team";
+function ownerDisplayName(owners: Rec[], id?: string) {
+  return id === ALL_TEAM_OWNER_ID ? "All Team" : owners.find(owner => owner.id === id)?.payload.name || "Unassigned";
+}
 const idsRanks = ["1", "2", "3"];
 function idsRank(record: Rec) { const value = String(record.payload.priority || ""); return idsRanks.includes(value) ? value : ""; }
 function idsOrder(a: Rec, b: Rec) { const ar = idsRank(a), br = idsRank(b); return (ar ? Number(ar) : 99) - (br ? Number(br) : 99) || a.createdAt - b.createdAt; }
@@ -169,7 +173,7 @@ export default function Home() {
   const byKind = (kind: Kind) => records.filter(r => r.kind === kind);
   const owners = sortOwnersByLastName(byKind("owner"));
   const owner = (id?: string) => owners.find(o => o.id === id)?.payload;
-  const ownerName = (id?: string) => owner(id)?.name || "Unassigned";
+  const ownerName = (id?: string) => ownerDisplayName(owners, id);
   const searchResults = useMemo(() => {
     if (!query.trim()) return [];
     const q = query.toLowerCase();
@@ -485,7 +489,7 @@ function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }
   const sectionRemaining=Math.max(0,agenda[section].minutes*60-sectionSeconds), isIdsSection=section===5;
   const idsMinutePulse=isIdsSection&&[2,3,4,5].some(minute=>sectionRemaining<=minute*60&&sectionRemaining>minute*60-8);
   const timerWarning=sectionRemaining>0&&(sectionRemaining<=60||idsMinutePulse);
-  function changeSection(next:number){setSection(next);setSectionSeconds(0);}
+  function changeSection(next:number){setSection(next);setSectionSeconds(0);if(next!==4&&reviewOwnerId===ALL_TEAM_OWNER_ID)setReviewOwnerId("all");}
   useEffect(()=>{
     if(!running)return;
     sectionHeading.current?.focus({preventScroll:true});
@@ -586,7 +590,7 @@ function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }
     {!issues.length&&<Empty icon={CheckCircle2} title="IDS queue is clear" copy="Add an issue here or use Drop Down during the earlier review sections."/>}
   </div> : null;
 
-  const reviewOwnerFilter = [1,2,4].includes(section) ? <div className="meeting-owner-filter"><div><Users size={18}/><span>Review by owner</span></div><div className="meeting-owner-controls"><label><span>Show</span><select aria-label="Filter meeting review by owner" value={reviewOwnerId} onChange={e=>setReviewOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Sort</span><select aria-label="Sort meeting review by owner" value={reviewOwnerSort} onChange={e=>setReviewOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div></div> : null;
+  const reviewOwnerFilter = [1,2,4].includes(section) ? <div className="meeting-owner-filter"><div><Users size={18}/><span>Review by owner</span></div><div className="meeting-owner-controls"><label><span>Show</span><select aria-label="Filter meeting review by owner" value={reviewOwnerId} onChange={e=>setReviewOwnerId(e.target.value)}><option value="all">Whole team</option>{section===4&&<option value={ALL_TEAM_OWNER_ID}>All Team To-Dos</option>}{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Sort</span><select aria-label="Sort meeting review by owner" value={reviewOwnerSort} onChange={e=>setReviewOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div></div> : null;
 
   return <>
     <PageHead eyebrow="PARK'S 60-MINUTE WORKFLOW" title="Level 10 Meeting" subtitle="Review the live Scorecard, Rocks, and To-Dos; add items to IDS and assign the next actions together."/>
@@ -634,15 +638,20 @@ function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }
 }
 
 function MeetingTodoComposer({ issue, todos, owners, upsert, nextMeetingWeek, meetingId, sectionName }: any) {
-  const linkedTodo=issue?todos.find((todo:Rec)=>todo.payload.sourceIssueId===issue.id&&todo.payload.createdMeetingId===meetingId):undefined;
-  const [open,setOpen]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState(""),[savedTitle,setSavedTitle]=useState("");
-  const [data,setData]=useState({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});
-  useEffect(()=>{
-    setData({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});
-  },[linkedTodo?.id,linkedTodo?.updatedAt,nextMeetingWeek]);
-  function toggleEditor(){
-    if(!open){setError("");setData({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});}
-    setOpen(value=>!value);
+  const linkedTodos=issue?todos.filter((todo:Rec)=>todo.payload.sourceIssueId===issue.id&&(todo.payload.createdMeetingId===meetingId||todo.payload.status!=="done")):[];
+  const [open,setOpen]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState(""),[savedTitle,setSavedTitle]=useState(""),[editingTodoId,setEditingTodoId]=useState("");
+  const [data,setData]=useState({title:"",ownerId:"",dueDate:nextMeetingWeek});
+  const titleInput=useRef<HTMLInputElement>(null);
+  const editingTodo=linkedTodos.find((todo:Rec)=>todo.id===editingTodoId);
+  useEffect(()=>{if(open&&!saving)titleInput.current?.focus({preventScroll:true});},[open,saving,editingTodoId,savedTitle]);
+  function addTodo(){
+    if(saving)return;
+    if(!open||editingTodoId){setData({title:"",ownerId:"",dueDate:nextMeetingWeek});setEditingTodoId("");setError("");}
+    setOpen(true);titleInput.current?.focus({preventScroll:true});
+  }
+  function editTodo(todo:Rec){
+    if(saving)return;
+    setEditingTodoId(todo.id);setData({title:todo.payload.title||"",ownerId:todo.payload.ownerId||"",dueDate:todo.payload.dueDate||nextMeetingWeek});setError("");setOpen(true);
   }
   async function saveTodo(event:React.FormEvent){
     event.preventDefault();
@@ -650,21 +659,26 @@ function MeetingTodoComposer({ issue, todos, owners, upsert, nextMeetingWeek, me
     setSaving(true);setError("");
     try {
       const saved=await upsert({
-        ...(linkedTodo||{}),id:linkedTodo?.id||uid("todo"),kind:"todo",
-        payload:{...(linkedTodo?.payload||{}),title:data.title.trim(),ownerId:data.ownerId,dueDate:data.dueDate,status:linkedTodo?.payload.status||"open",completedAt:linkedTodo?.payload.completedAt||null,source:`Created during ${sectionName}`,...(issue?{sourceIssueId:issue.id}:{}),createdMeetingId:meetingId}
+        ...(editingTodo||{}),id:editingTodo?.id||uid("todo"),kind:"todo",
+        payload:{...(editingTodo?.payload||{}),title:data.title.trim(),ownerId:data.ownerId,dueDate:data.dueDate,status:editingTodo?.payload.status||"open",completedAt:editingTodo?.payload.completedAt||null,source:editingTodo?.payload.source||`Created during ${sectionName}`,...(issue?{sourceIssueId:issue.id}:{}),createdMeetingId:editingTodo?.payload.createdMeetingId||meetingId}
       });
       if(!saved){setError("This To-Do could not be saved. Your entry is still here—please try again.");return;}
-      setSavedTitle(data.title.trim());setOpen(false);setData({title:"",ownerId:"",dueDate:nextMeetingWeek});
+      setSavedTitle(data.title.trim());setEditingTodoId("");setData({title:"",ownerId:"",dueDate:nextMeetingWeek});
+      setOpen(Boolean(issue));
+      if(issue)titleInput.current?.focus({preventScroll:true});
     } finally {setSaving(false);}
   }
-  return <div className={`ids-todo-composer ${linkedTodo?"saved":""}`}>
-    <div className="ids-todo-summary"><div><ListChecks size={18}/><span><strong>{linkedTodo?"To-Do saved":`Add a To-Do during ${sectionName}`}</strong><small>{linkedTodo?`${linkedTodo.payload.title} · Due ${dateLabel(linkedTodo.payload.dueDate)}`:`Assign a commitment for the next L10 on ${dateLabel(nextMeetingWeek)}.`}</small></span></div><button type="button" aria-expanded={open} onClick={toggleEditor}>{linkedTodo?<Pencil size={15}/>:<Plus size={15}/>} {open?"Close editor":linkedTodo?"Edit To-Do":"Add To-Do"}</button></div>
-    {savedTitle&&!open&&!linkedTodo&&<p className="meeting-todo-saved" role="status">Saved: {savedTitle}. Included in the Conclude recap.</p>}
+  return <div className={`ids-todo-composer ${linkedTodos.length?"saved":""}`}>
+    <div className="ids-todo-summary"><div><ListChecks size={18}/><span><strong>{issue&&linkedTodos.length?`${linkedTodos.length} To-Do${linkedTodos.length===1?"":"s"} for this IDS item`:`Add a To-Do during ${sectionName}`}</strong><small>{issue?"Assign as many actions as needed here. Each action has its own owner and due date.":`Assign a commitment for the next L10 on ${dateLabel(nextMeetingWeek)}.`}</small></span></div><button type="button" disabled={saving} aria-expanded={open} onClick={addTodo}><Plus size={15}/> {linkedTodos.length?"Add another To-Do":"Add To-Do"}</button></div>
+    {issue&&linkedTodos.length>0&&<div className="ids-linked-todos" aria-label={`To-Dos assigned from ${issue.payload.title}`}>
+      {linkedTodos.map((todo:Rec)=><div className="ids-linked-todo" key={todo.id}><div><strong>{todo.payload.title}</strong><span><OwnerPill name={ownerDisplayName(owners,todo.payload.ownerId)}/> · Due {dateLabel(todo.payload.dueDate)} · {todo.payload.status==="done"?"Done":"Open"}</span></div><button type="button" className="icon-btn" disabled={saving} title="Edit To-Do" aria-label={`Edit To-Do ${todo.payload.title}`} onClick={()=>editTodo(todo)}><Pencil size={15}/></button></div>)}
+    </div>}
+    {savedTitle&&<p className="meeting-todo-saved" role="status">Saved: {savedTitle}. {issue?"Add the next action below.":"Included in the Conclude recap."}</p>}
     {open&&<form className="ids-todo-fields" aria-label={issue?`To-Do for ${issue.payload.title}`:`Add To-Do during ${sectionName}`} onSubmit={saveTodo}>
-      <label><span>To-Do</span><input autoFocus required value={data.title} onChange={e=>setData(current=>({...current,title:e.target.value}))} placeholder="Enter the commitment"/></label>
-      <label><span>Owner</span><select required value={data.ownerId} onChange={e=>setData(current=>({...current,ownerId:e.target.value}))}><option value="">Select owner</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label>
-      <label><span>Due date</span><input required type="date" value={data.dueDate} onChange={e=>setData(current=>({...current,dueDate:e.target.value}))}/></label>
-      <button className="primary-btn" type="submit" disabled={!data.title.trim()||!data.ownerId||!data.dueDate||saving}><Save size={15}/> {saving?"Saving…":linkedTodo?"Save changes":"Save To-Do"}</button>
+      <label><span>{editingTodo?"Edit To-Do":"New To-Do"}</span><input ref={titleInput} autoFocus required disabled={saving} value={data.title} onChange={e=>setData(current=>({...current,title:e.target.value}))} placeholder="Enter the commitment"/></label>
+      <label><span>Owner</span><select required disabled={saving} value={data.ownerId} onChange={e=>setData(current=>({...current,ownerId:e.target.value}))}><option value="">Select owner</option><option value={ALL_TEAM_OWNER_ID}>All Team</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label>
+      <label><span>Due date</span><input required disabled={saving} type="date" value={data.dueDate} onChange={e=>setData(current=>({...current,dueDate:e.target.value}))}/></label>
+      <div className="ids-todo-form-actions"><button className="primary-btn" type="submit" disabled={!data.title.trim()||!data.ownerId||!data.dueDate||saving}><Save size={15}/> {saving?"Saving…":editingTodo?"Save changes":issue?"Save & add another":"Save To-Do"}</button><button type="button" className="todo-form-close" disabled={saving} onClick={()=>setOpen(false)}>Close</button></div>
       {error&&<p className="meeting-todo-error" role="alert">{error}</p>}
     </form>}
   </div>;
@@ -679,7 +693,7 @@ function Editor({ kind, record, owners, close, save }: any) {
   const base=record?.payload||{}; const [data,setData]=useState<any>({...base,milestonesText:(base.milestones||[]).map((m:any)=>`${m.title}|${m.dueDate}|${m.done?"done":"open"}`).join("\n")}); const set=(k:string,v:any)=>setData((d:any)=>({...d,[k]:v}));
   const title=record?`Edit ${kindLabels[kind]}`:`Add ${kindLabels[kind]}`;
   function submit(e:any){e.preventDefault();let payload={...data};if(kind==="rock"){payload.status=payload.status==="off-track"?"off-track":"on-track";payload.quarter=payload.quarter||`Q${Math.floor(new Date().getMonth()/3)+1} ${new Date().getFullYear()}`;delete payload.progress;payload.milestones=(payload.milestonesText||"").split("\n").filter(Boolean).map((line:string,index:number)=>{const [title,dueDate,state]=line.split("|");const existing=base.milestones?.[index];return{id:existing?.id||uid("milestone"),title:title.trim(),dueDate:(dueDate||"").trim(),done:(state||"").trim().toLowerCase()==="done"};});delete payload.milestonesText;}if(kind==="metric"){payload.target=Number(payload.target||0);payload.direction=payload.direction==="lte"?"lte":"gte";}save({id:record?.id||uid(kind),kind,payload,sortKey:record?.sortKey||""});}
-  const OwnerSelect=()=> <label className="form-field"><span>Owner</span><select value={data.ownerId||""} onChange={e=>set("ownerId",e.target.value)} required><option value="">Select an owner</option>{owners.map((o:Rec)=><option key={o.id} value={o.id}>{o.payload.name}</option>)}</select></label>;
+  const OwnerSelect=()=> <label className="form-field"><span>Owner</span><select value={data.ownerId||""} onChange={e=>set("ownerId",e.target.value)} required><option value="">Select an owner</option>{(kind==="todo"||data.ownerId===ALL_TEAM_OWNER_ID)&&<option value={ALL_TEAM_OWNER_ID}>All Team</option>}{owners.map((o:Rec)=><option key={o.id} value={o.id}>{o.payload.name}</option>)}</select></label>;
   return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><form className="modal" onSubmit={submit}><div className="modal-head"><div><span className="eyebrow">MANUAL ENTRY</span><h2>{title}</h2></div><button type="button" className="icon-btn" onClick={close}><X size={19}/></button></div><div className="modal-body">
     {kind==="owner"&&<><label className="form-field"><span>Name</span><input value={data.name||""} onChange={e=>set("name",e.target.value)} required autoFocus/></label><label className="form-field"><span>Role</span><input value={data.role||""} onChange={e=>set("role",e.target.value)} required/></label><div className="form-row"><label className="form-field"><span>Initials</span><input value={data.initials||""} maxLength={3} onChange={e=>set("initials",e.target.value.toUpperCase())}/></label><label className="form-field"><span>Color</span><select value={data.color||"orange"} onChange={e=>set("color",e.target.value)}><option>orange</option><option>blue</option><option>green</option></select></label></div></>}
     {kind==="metric"&&<><label className="form-field"><span>Measurable</span><input value={data.name||""} onChange={e=>set("name",e.target.value)} required autoFocus placeholder="e.g., Open corrective actions"/></label><OwnerSelect/><div className="form-row"><label className="form-field"><span>Target</span><input type="number" step="any" value={data.target??""} onChange={e=>set("target",e.target.value)} required/></label><label className="form-field"><span>Direction</span><select value={data.direction||"gte"} onChange={e=>set("direction",e.target.value)}><option value="gte">At least (≥)</option><option value="lte">At most (≤)</option></select></label></div><div className="form-row"><label className="form-field"><span>Unit</span><select value={data.unit||"count"} onChange={e=>set("unit",e.target.value)}><option value="count">count</option><option value="%">%</option><option value="days">days</option><option value="hours">hours</option></select></label><label className="form-field"><span>Cadence</span><select value={data.cadence||"Weekly"} onChange={e=>set("cadence",e.target.value)}><option>Weekly</option><option>Monthly</option></select></label></div></>}

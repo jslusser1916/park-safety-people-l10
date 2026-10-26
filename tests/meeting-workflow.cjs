@@ -30,14 +30,14 @@ const hooks = {
   },
 };
 const filename = path.join(__dirname, '../app/page.tsx');
-const source = fs.readFileSync(filename, 'utf8') + '\nexport { Meetings, Todos, MeetingTodoComposer };';
+const source = fs.readFileSync(filename, 'utf8') + '\nexport { Meetings, Todos, MeetingTodoComposer, Editor, ownerDisplayName };';
 const output = ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const compiled = new Module(filename, module);
 compiled.filename = filename;
 compiled.paths = module.paths;
 compiled.require = name => name === 'react' ? hooks : require(name);
 compiled._compile(output, filename);
-const { Meetings, Todos, MeetingTodoComposer } = compiled.exports;
+const { Meetings, Todos, MeetingTodoComposer, Editor, ownerDisplayName } = compiled.exports;
 
 function expand(element, location = 'root') {
   if (element == null || typeof element === 'boolean') return null;
@@ -102,7 +102,7 @@ const upsert = async record => {
   return value;
 };
 const trackStatus = (record, status, patch = {}) => upsert({ ...record, payload: { ...record.payload, ...patch, status } });
-const common = { records, ownerName: id => id === 'owner-a' ? 'Alex Adams' : 'Blair Brooks', upsert, trackStatus, open() {}, openIssue() {}, remove: async record => { records = records.filter(r => r.id !== record.id); props.records = records; } };
+const common = { records, ownerName: id => ownerDisplayName(records.filter(r => r.kind === 'owner'), id), upsert, trackStatus, open() {}, openIssue() {}, remove: async record => { records = records.filter(r => r.id !== record.id); props.records = records; } };
 
 async function run() {
   mount(Todos, { ...common, records });
@@ -184,7 +184,30 @@ async function run() {
   changeWithin(getLinkedForm(), n => n.type === 'input' && n.props.placeholder === 'Enter the commitment', 'A separately worded accountable action');
   changeWithin(getLinkedForm(), n => n.type === 'select', 'owner-a');
   await getLinkedForm().props.onSubmit({ preventDefault() {} }); render();
-  assignedIds.push(records.find(r => r.payload.title === 'A separately worded accountable action').id);
+  const firstLinkedId = records.find(r => r.payload.title === 'A separately worded accountable action').id;
+  assignedIds.push(firstLinkedId);
+  assert.equal(nodes(getLinkedForm()).find(n => n.type === 'input' && n.props.placeholder === 'Enter the commitment').props.value, '');
+  assert.equal(nodes(getLinkedForm()).find(n => n.type === 'select').props.value, '');
+  assert.equal(nodes(getLinkedForm()).filter(n => n.type === 'option' && n.props.value === 'all-team').length, 1);
+  changeWithin(getLinkedForm(), n => n.type === 'input' && n.props.placeholder === 'Enter the commitment', 'Second action for the whole team');
+  changeWithin(getLinkedForm(), n => n.type === 'select', 'all-team');
+  await getLinkedForm().props.onSubmit({ preventDefault() {} }); render();
+  const secondLinkedTodo = records.find(r => r.payload.title === 'Second action for the whole team');
+  assert.notEqual(secondLinkedTodo.id, firstLinkedId);
+  assert.equal(secondLinkedTodo.payload.ownerId, 'all-team');
+  assignedIds.push(secondLinkedTodo.id);
+  assert.equal(records.filter(r => r.kind === 'todo' && r.payload.sourceIssueId === 'issue').length, 2);
+  card = find(n => n.type === 'article' && text(n).includes('A discussion topic, not a commitment'));
+  assert.match(text(card), /2 To-Dos for this IDS item/);
+  assert.match(text(card), /All Team/);
+  assert.match(text(card), /A separately worded accountable action/);
+  await nodes(card).find(n => n.type === 'button' && n.props['aria-label'] === 'Edit To-Do A separately worded accountable action').props.onClick(); render();
+  changeWithin(getLinkedForm(), n => n.type === 'input' && n.props.placeholder === 'Enter the commitment', 'First linked action edited without duplication');
+  await getLinkedForm().props.onSubmit({ preventDefault() {} }); render();
+  assert.equal(records.find(r => r.id === firstLinkedId).payload.title, 'First linked action edited without duplication');
+  assert.equal(records.filter(r => r.kind === 'todo' && r.payload.sourceIssueId === 'issue').length, 2);
+  assert.equal(records.find(r => r.id === secondLinkedTodo.id).payload.title, 'Second action for the whole team');
+  console.log('PASS: An IDS item saves multiple distinct To-Dos in place, supports All Team, and edits either action without overwriting another.');
   card = find(n => n.type === 'article' && text(n).includes('A discussion topic, not a commitment'));
   const solve = nodes(card).find(n => n.type === 'button' && text(n).trim() === 'Mark solved');
   assert.equal(solve.props.disabled, false);
@@ -211,7 +234,8 @@ async function run() {
   await click('Save & conclude');
   const meeting = records.find(r => r.kind === 'meeting');
   assert.deepEqual([...meeting.payload.assignedTodoIds].sort(), assignedIds.sort());
-  assert.equal(meeting.payload.assignedTodos.length, 6);
+  assert.equal(meeting.payload.assignedTodos.length, 7);
+  assert.equal(meeting.payload.assignedTodos.find(todo => todo.id === secondLinkedTodo.id).ownerName, 'All Team');
   for (const id of assignedIds) {
     const todo = records.find(r => r.id === id);
     assert.equal(todo.payload.status, 'open');
@@ -236,6 +260,17 @@ async function run() {
   assert.equal(nodes(getFailureForm()).find(n => n.type === 'input' && n.props.placeholder === 'Enter the commitment').props.value, 'Preserve this entry');
   assert.match(text(tree), /could not be saved/);
   console.log('PASS: A failed save leaves the blank-form entry available for retry and reports the failure.');
+
+  let sidebarSaved;
+  mount(Editor, { kind: 'todo', owners: records.filter(r => r.kind === 'owner'), close() {}, save(record) { sidebarSaved = record; } });
+  const getSidebarForm = () => find(n => n.type === 'form');
+  assert.equal(nodes(getSidebarForm()).filter(n => n.type === 'option' && n.props.value === 'all-team').length, 1);
+  changeWithin(getSidebarForm(), n => n.type === 'input' && n.props.required && n.props.autoFocus, 'Shared action created outside Meeting Mode');
+  changeWithin(getSidebarForm(), n => n.type === 'select' && nodes(n).some(child => child.props?.value === 'all-team'), 'all-team');
+  await getSidebarForm().props.onSubmit({ preventDefault() {} });
+  assert.equal(sidebarSaved.payload.ownerId, 'all-team');
+  assert.equal(ownerDisplayName(records.filter(r => r.kind === 'owner'), sidebarSaved.payload.ownerId), 'All Team');
+  console.log('PASS: The sidebar To-Do editor also saves All Team and the shared label resolves correctly.');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
 
