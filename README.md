@@ -9,6 +9,16 @@ A shared, database-backed EOS workspace for Park Construction's Safety & People 
 - **Drop Down** creates an IDS issue without navigating away from the current meeting section.
 - In Meeting Mode, open IDS items use three exclusive discussion slots: **1**, **2**, and **3**. Solving an item immediately frees its slot for the next round.
 - The sidebar IDS page is for reviewing, adding, editing, and viewing solved history; prioritization and solving happen in Meeting Mode.
+- Drop Down uses the original item title and never changes its On Track/Off Track or Done/Not Done status. Existing automatically generated status labels are removed from open linked IDS issues when they still match the original generated title.
+- Segue, Headlines, and the review sections no longer contain section-notes inputs. IDS can be marked solved without a decision/solution input; saved historical resolutions remain intact.
+- Scorecard, Rock Review, Headlines, To-Do Review, and IDS each provide a blank Add To-Do form. IDS-linked To-Dos also start with an empty commitment and owner rather than copying the issue wording.
+- Conclude shows the exact saved To-Dos assigned during that meeting, including owner, due date, and current status. The completed meeting retains an immutable assignment snapshot for later review.
+- To-Dos have only **Open** and **Done** views, in both the sidebar and Meeting Mode. Previously archived records are classified by their saved completion status. Saving a meeting no longer archives incomplete commitments; they remain Open until checked Done.
+- Moving between meeting sections resets the page to the top. The Conclude recap can recover the pending meeting link from saved To-Dos after refreshing or returning from another page.
+
+### Regression checks
+
+Run `node tests/meeting-workflow.cjs` for isolated component interaction checks covering status tabs, legacy archived records, neutral Drop Down behavior, blank forms in all five applicable sections, IDS solving, Conclude recap, rating requirements, save behavior, and failed-save retry. The checks do not access production data.
 
 ## Persistence
 
@@ -65,4 +75,5 @@ Open `/api/health` to verify both the web application and database connection. A
 - Do not delete the PostgreSQL instance during a normal app redeploy. A replacement database starts empty and would reseed from the migration file.
 - Before replacing or moving the database, create a PostgreSQL backup and restore it into the new instance.
 - The old Sites deployment and its D1 database remain separate. Changes made there after this export do not automatically synchronize to Render.
+
 

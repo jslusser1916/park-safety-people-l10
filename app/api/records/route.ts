@@ -61,8 +61,27 @@ async function normalizeLegacyIssuePriorities() {
   const issueRows = await db.select().from(records).where(eq(records.kind, "issue"));
   for (const row of issueRows) {
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
+    let changed = false;
     if (["high", "medium", "low"].includes(String(payload.priority || ""))) {
-      await db.update(records).set({ payload: JSON.stringify({ ...payload, priority: "" }), updatedAt: Date.now() }).where(eq(records.id, row.id));
+      payload.priority = "";
+      changed = true;
+    }
+    // Remove only the old generated labels; preserve user-written issue titles.
+    if (payload.status !== "solved" && typeof payload.sourceId === "string") {
+      const [source] = await db.select().from(records).where(eq(records.id, payload.sourceId)).limit(1);
+      if (source) {
+        const sourcePayload = JSON.parse(source.payload) as Record<string, unknown>;
+        const title = String(source.kind === "metric" ? sourcePayload.name || "" : sourcePayload.title || "");
+        const generatedTitle = source.kind === "metric" ? `${title} is off target` : source.kind === "rock" ? `Rock off track: ${title}` : source.kind === "todo" ? `To-Do not done: ${title}` : "";
+        if (title && generatedTitle && payload.title === generatedTitle) {
+          payload.title = title;
+          if (payload.sourceLabel === generatedTitle) payload.sourceLabel = title;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      await db.update(records).set({ payload: JSON.stringify(payload), updatedAt: Date.now() }).where(eq(records.id, row.id));
     }
   }
 }
@@ -138,4 +157,5 @@ export async function DELETE(request: NextRequest) {
   await getDb().delete(records).where(eq(records.id, id));
   return NextResponse.json({ ok: true });
 }
+
 

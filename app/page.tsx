@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, BarChart3, CalendarDays, Check, CheckCircle2, ChevronRight,
   CircleDot, ClipboardCheck, Clock3, Gauge, History, LayoutDashboard,
@@ -105,7 +105,8 @@ export default function Home() {
     try {
       const response = await fetch("/api/records", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(next) });
       if (!response.ok) throw new Error("That change could not be saved.");
-    } catch (e: any) { setError(e.message); await load(); } finally { setSaving(false); }
+      return next;
+    } catch (e: any) { setError(e.message); await load(); return null; } finally { setSaving(false); }
   }
 
   async function remove(record: Rec, confirmation?: string) {
@@ -118,8 +119,9 @@ export default function Home() {
   async function trackStatus(record: Rec, status: string, payloadPatch: Record<string, any> = {}) {
     const now = new Date();
     const updated = { ...record, payload: { ...record.payload, ...payloadPatch, status } };
-    await upsert(updated);
-    await upsert({
+    const saved = await upsert(updated);
+    if (!saved) return null;
+    return upsert({
       id: uid("event"), kind: "status_event",
       payload: {
         entityKind: record.kind === "metric_value" ? "scorecard" : record.kind,
@@ -245,7 +247,9 @@ function sortRecordsByOwner(records: Rec[], direction: string, ownerName: (id?: 
 
 function Overview({ records, ownerName, setView, open }: any) {
   const get = (k: Kind) => records.filter((r: Rec) => r.kind === k);
-  const todos = get("todo"), activeTodos = todos.filter((todo: Rec) => !todo.payload.archivedAt), rocks = get("rock"), issues = get("issue"), metrics = get("metric"), values = get("metric_value");
+  const todos = get("todo"), rocks = get("rock"), issues = get("issue"), metrics = get("metric"), values = get("metric_value");
+  const thisWeek = mondayISO(), weekEnd = addDaysISO(thisWeek, 6);
+  const activeTodos = todos.filter((todo: Rec) => todo.payload.status !== "done" || [todo.payload.completedAt?.slice(0,10), todo.payload.dueDate].some(date => date && date >= thisWeek && date <= weekEnd));
   const currentWeek = previousMondayISO();
   const misses = metrics.filter((m: Rec) => { const v = values.find((x: Rec) => x.payload.metricId === m.id && x.payload.week === currentWeek)?.payload.value; return v !== undefined && (m.payload.direction !== "lte" ? v < m.payload.target : v > m.payload.target); }).length;
   const openTodos = activeTodos.filter((x: Rec) => x.payload.status !== "done");
@@ -322,12 +326,11 @@ function PerformanceAnalytics({ records, ownerName }: any) {
   const events = realScopedEvents.filter((event: Rec) => event.payload.entityKind !== "todo" || currentTodoIds.has(event.payload.recordId));
   const currentStatusFallbacks = records.filter((record: Rec) => {
     if (record.isSample || !["rock", "metric_value", "todo"].includes(record.kind)) return false;
-    if (record.kind === "todo" && record.payload.archivedAt) return false;
     const status = record.payload.status;
     const dateValue = record.kind === "metric_value" ? record.payload.week : record.kind === "todo" ? record.payload.dueDate || new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10) : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
     const date = new Date(`${dateValue}T12:00:00`);
     const validStatus = record.kind === "todo" ? ["open", "done"].includes(status) : ["on-track", "off-track", "complete"].includes(status);
-    const belongsToPeriod = record.kind === "todo" ? isCurrentPeriod : date >= start && date <= end;
+    const belongsToPeriod = record.kind === "todo" ? isCurrentPeriod && (status !== "done" || date >= start && date <= end) : date >= start && date <= end;
     return validStatus && belongsToPeriod && (ownerId === "all" || record.payload.ownerId === ownerId);
   }).map((record: Rec) => {
     const date = record.kind === "metric_value" ? record.payload.week : record.kind === "todo" ? record.payload.dueDate || new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10) : new Date(record.updatedAt || record.createdAt).toISOString().slice(0,10);
@@ -411,7 +414,7 @@ function Scorecard({ records, ownerName, upsert, trackStatus, open }: any) {
     <div className="scorecard-week-banner"><div><CalendarDays size={25}/><span>Scorecard for the next L10</span></div><strong>Week of {dateLabel(week)}</strong><small>{week === defaultWeek ? "Current entry week" : "Viewing historical week"}</small></div>
     <div className="toolbar scorecard-toolbar"><div className="toolbar-filters"><label>Week of <select value={week} onChange={e => setWeek(e.target.value)}>{weeks.map(w => <option key={w} value={w}>{dateLabel(w)}</option>)}</select></label><label>Owner <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)}><option value="all">Whole team</option>{owners.map((owner: Rec) => <option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label>Sort <select value={ownerSort} onChange={e => setOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div><span><CircleDot size={14}/> Values save when you leave the field</span></div>
     <div className="table-card"><div className="score-head"><span>MEASURABLE</span><span>OWNER</span><span>GOAL</span><span>8-WEEK TREND</span><span>THIS WEEK</span><span/></div>
-      {visibleMetrics.map((m: Rec) => { const current = valueFor(m.id, week); const hit = current?.payload.value != null ? (m.payload.direction !== "lte" ? current.payload.value >= m.payload.target : current.payload.value <= m.payload.target) : null; const series = [...weeks].reverse().map(w => valueFor(m.id,w)?.payload.value).filter((v:any)=>v!=null); const max = Math.max(m.payload.target, ...series, 1); return <div className="score-row" key={m.id}><div><strong>{m.payload.name}</strong><span>{m.payload.cadence} <Sample show={m.isSample}/></span></div><OwnerPill name={ownerName(m.payload.ownerId)}/><div className="goal">{m.payload.direction !== "lte" ? "≥" : "≤"} {m.payload.target}{m.payload.unit === "%" ? "%" : ` ${m.payload.unit}`}</div><div className="sparkline">{[...weeks].reverse().map((w,i)=>{const v=valueFor(m.id,w)?.payload.value;return <i key={i} className={v==null ? "empty-bar" : ""} style={{height:`${v==null ? 8 : Math.max(12,(v/max)*38)}px`}}/>})}</div><div className="score-value-status"><div className={`value-cell ${hit === true ? "hit" : hit === false ? "miss" : ""}`}><input type="number" defaultValue={current?.payload.value ?? ""} key={`${m.id}-${week}-${current?.payload.value}`} onBlur={e => saveValue(m,e.target.value)} placeholder="—"/><span>{m.payload.unit === "%" ? "%" : ""}</span></div>{hit !== null&&<span className={`score-track-badge ${hit?"on-track":"off-track"}`}>{hit?<><CheckCircle2 size={13}/> On Track</>:<><AlertTriangle size={13}/> Off Track</>}</span>}</div><button className="icon-btn" onClick={() => open(m)}><Pencil size={15}/></button></div>; })}
+      {visibleMetrics.map((m: Rec) => { const current = valueFor(m.id, week); const hit = current?.payload.status === "on-track" ? true : current?.payload.status === "off-track" ? false : current?.payload.value != null ? (m.payload.direction !== "lte" ? current.payload.value >= m.payload.target : current.payload.value <= m.payload.target) : null; const series = [...weeks].reverse().map(w => valueFor(m.id,w)?.payload.value).filter((v:any)=>v!=null); const max = Math.max(m.payload.target, ...series, 1); return <div className="score-row" key={m.id}><div><strong>{m.payload.name}</strong><span>{m.payload.cadence} <Sample show={m.isSample}/></span></div><OwnerPill name={ownerName(m.payload.ownerId)}/><div className="goal">{m.payload.direction !== "lte" ? "≥" : "≤"} {m.payload.target}{m.payload.unit === "%" ? "%" : ` ${m.payload.unit}`}</div><div className="sparkline">{[...weeks].reverse().map((w,i)=>{const v=valueFor(m.id,w)?.payload.value;return <i key={i} className={v==null ? "empty-bar" : ""} style={{height:`${v==null ? 8 : Math.max(12,(v/max)*38)}px`}}/>})}</div><div className="score-value-status"><div className={`value-cell ${hit === true ? "hit" : hit === false ? "miss" : ""}`}><input type="number" defaultValue={current?.payload.value ?? ""} key={`${m.id}-${week}-${current?.payload.value}`} onBlur={e => saveValue(m,e.target.value)} placeholder="—"/><span>{m.payload.unit === "%" ? "%" : ""}</span></div>{hit !== null&&<span className={`score-track-badge ${hit?"on-track":"off-track"}`}>{hit?<><CheckCircle2 size={13}/> On Track</>:<><AlertTriangle size={13}/> Off Track</>}</span>}</div><button className="icon-btn" onClick={() => open(m)}><Pencil size={15}/></button></div>; })}
       {!metrics.length ? <Empty icon={BarChart3} title="Build your scorecard" copy="Add the handful of weekly numbers that predict success."/> : !visibleMetrics.length && <Empty icon={Users} title="No measurables for this owner" copy="Choose another owner or assign a scorecard measurable to this team member."/>}
     </div>
     <div className="helper-note"><ShieldCheck size={18}/><div><strong>EOS meeting habit</strong><span>A miss becomes an issue only when it needs discussion. Keep the scorecard review to five minutes.</span></div></div>
@@ -435,14 +438,20 @@ function Rocks({ records, ownerName, upsert, trackStatus, open, remove }: any) {
 function Todos({ records, ownerName, trackStatus, open, remove }: any) {
   const [filter,setFilter]=useState("open");
   const allTodos = records.filter((r:Rec)=>r.kind==="todo");
-  const todos = allTodos.filter((todo:Rec) => {
-    if (filter === "archived") return Boolean(todo.payload.archivedAt);
-    if (todo.payload.archivedAt) return false;
-    if (filter === "done") return todo.payload.status === "done";
-    if (filter === "open") return todo.payload.status !== "done";
-    return true;
-  }).sort((a:Rec,b:Rec) => filter === "archived" ? String(b.payload.archivedAt).localeCompare(String(a.payload.archivedAt)) : 0);
-  return <><PageHead eyebrow="7-DAY COMMITMENTS" title="To-Dos" subtitle="Current commitments stay active through their due meeting, then move into weekly history when that meeting is saved." action="Add to-do" onAction={()=>open()}/><div className="filter-tabs"><button className={filter==="open"?"active":""} onClick={()=>setFilter("open")}>Open</button><button className={filter==="done"?"active":""} onClick={()=>setFilter("done")}>Done</button><button className={filter==="all"?"active":""} onClick={()=>setFilter("all")}>All active</button><button className={filter==="archived"?"active":""} onClick={()=>setFilter("archived")}>Archived</button></div><div className="table-card todo-table">{todos.map((t:Rec)=>{const archived=Boolean(t.payload.archivedAt);return <div className={`todo-row ${t.payload.status==="done"?"done":""} ${archived?"archived":""}`} key={t.id}><button className="todo-check" disabled={archived} aria-label={archived?"Archived To-Do":t.payload.status==="done"?"Mark To-Do not done":"Mark To-Do done"} onClick={()=>trackStatus(t,t.payload.status==="done"?"open":"done",{completedAt:t.payload.status==="done"?null:new Date().toISOString()})}>{t.payload.status==="done"&&<Check size={15}/>}</button><div><strong>{t.payload.title}</strong><span>{archived?`Archived after week of ${dateLabel(t.payload.archivedWeek||t.payload.dueDate)}`:t.payload.source||"Added manually"} <Sample show={t.isSample}/></span></div><OwnerPill name={ownerName(t.payload.ownerId)}/><span className={`due ${!archived&&t.payload.status!=="done"&&t.payload.dueDate<new Date().toISOString().slice(0,10)?"late":""}`}>{dateLabel(t.payload.dueDate)}</span><button className="icon-btn" onClick={()=>open(t)}><Pencil size={15}/></button><button className="icon-btn danger-icon" onClick={()=>remove(t)}><Trash2 size={15}/></button></div>})}{!todos.length&&<Empty icon={CheckCircle2} title={filter==="archived"?"No archived To-Dos yet":"Nothing here"} copy={filter==="archived"?"Completed meeting weeks will be preserved here.":"Add a seven-day commitment or change the filter."}/ >}</div></>;
+  const todos = allTodos.filter((todo:Rec) => filter==="done" ? todo.payload.status==="done" : todo.payload.status!=="done");
+  return <>
+    <PageHead eyebrow="TEAM COMMITMENTS" title="To-Dos" subtitle="Open commitments stay here until completed. Check an item to move it to Done." action="Add To-Do" onAction={()=>open()}/>
+    <div className="filter-tabs" aria-label="To-Do status">
+      <button className={filter==="open"?"active":""} onClick={()=>setFilter("open")}>Open ({allTodos.filter((todo:Rec)=>todo.payload.status!=="done").length})</button>
+      <button className={filter==="done"?"active":""} onClick={()=>setFilter("done")}>Done ({allTodos.filter((todo:Rec)=>todo.payload.status==="done").length})</button>
+    </div>
+    <div className="table-card todo-table">{todos.map((t:Rec)=><div className={`todo-row ${t.payload.status==="done"?"done":""}`} key={t.id}>
+      <button className="todo-check" aria-label={t.payload.status==="done"?"Mark To-Do not done":"Mark To-Do done"} onClick={()=>trackStatus(t,t.payload.status==="done"?"open":"done",{completedAt:t.payload.status==="done"?null:new Date().toISOString()})}>{t.payload.status==="done"&&<Check size={15}/>}</button>
+      <div><strong>{t.payload.title}</strong><span>{t.payload.source||"Added manually"} <Sample show={t.isSample}/></span></div>
+      <OwnerPill name={ownerName(t.payload.ownerId)}/><span className={`due ${t.payload.status!=="done"&&t.payload.dueDate<new Date().toISOString().slice(0,10)?"late":""}`}>{dateLabel(t.payload.dueDate)}</span>
+      <button className="icon-btn" aria-label={`Edit ${t.payload.title}`} onClick={()=>open(t)}><Pencil size={15}/></button><button className="icon-btn danger-icon" aria-label={`Delete ${t.payload.title}`} onClick={()=>remove(t)}><Trash2 size={15}/></button>
+    </div>)}{!todos.length&&<Empty icon={CheckCircle2} title={filter==="done"?"No completed To-Dos yet":"No open To-Dos"} copy={filter==="done"?"Completed commitments appear here as soon as they are checked.":"Add a commitment here or during the meeting."}/>}</div>
+  </>;
 }
 
 function Issues({ records, ownerName, open, remove }: any) {
@@ -456,60 +465,208 @@ function Headlines({ records, ownerName, open, remove }: any) {
 }
 
 function Meetings({ records, ownerName, upsert, trackStatus, remove, openIssue }: any) {
-  const [running,setRunning]=useState(false),[section,setSection]=useState(0),[seconds,setSeconds]=useState(0),[sectionSeconds,setSectionSeconds]=useState(0),[agendaOpen,setAgendaOpen]=useState(true),[reviewOwnerId,setReviewOwnerId]=useState("all"),[reviewOwnerSort,setReviewOwnerSort]=useState("asc"),[ratings,setRatings]=useState<Record<string,number>>({}),[notes,setNotes]=useState<Record<number,string>>({}),[cascade,setCascade]=useState(""),[resolutions,setResolutions]=useState<Record<string,string>>({});
+  const [running,setRunning]=useState(false),[section,setSection]=useState(0),[seconds,setSeconds]=useState(0),[sectionSeconds,setSectionSeconds]=useState(0),[agendaOpen,setAgendaOpen]=useState(true),[reviewOwnerId,setReviewOwnerId]=useState("all"),[reviewOwnerSort,setReviewOwnerSort]=useState("asc"),[ratings,setRatings]=useState<Record<string,number>>({}),[meetingNotes,setMeetingNotes]=useState(""),[cascade,setCascade]=useState("");
+  const [meetingId,setMeetingId]=useState(()=>{
+    const completedIds=new Set(records.filter((record:Rec)=>record.kind==="meeting"&&record.payload.status==="complete").map((record:Rec)=>record.id));
+    const pendingTodo=records.filter((record:Rec)=>record.kind==="todo"&&record.payload.createdMeetingId&&!completedIds.has(record.payload.createdMeetingId)).sort((a:Rec,b:Rec)=>b.createdAt-a.createdAt)[0];
+    return pendingTodo?.payload.createdMeetingId||uid("meeting");
+  });
+  const [todoFilter,setTodoFilter]=useState("open"),[concluding,setConcluding]=useState(false),[solvingId,setSolvingId]=useState("");
+  const sectionHeading=useRef<HTMLHeadingElement>(null);
   const meetings=records.filter((r:Rec)=>r.kind==="meeting").sort((a:Rec,b:Rec)=>b.createdAt-a.createdAt);
-  const owners=sortOwnersByLastName(records.filter((r:Rec)=>r.kind==="owner")), metrics=records.filter((r:Rec)=>r.kind==="metric"), values=records.filter((r:Rec)=>r.kind==="metric_value"), rocks=records.filter((r:Rec)=>r.kind==="rock"), todos=records.filter((r:Rec)=>r.kind==="todo"), activeTodos=records.filter((r:Rec)=>r.kind==="todo"&&!r.payload.archivedAt), headlines=records.filter((r:Rec)=>r.kind==="headline"), issues=records.filter((r:Rec)=>r.kind==="issue"&&r.payload.status!=="solved").sort(idsOrder);
-  const week=plannedScorecardWeek(records), nextMeetingWeek=addDaysISO(week,7); const valueFor=(metricId:string)=>values.find((v:Rec)=>v.payload.metricId===metricId&&v.payload.week===week);
+  const owners=sortOwnersByLastName(records.filter((r:Rec)=>r.kind==="owner")), metrics=records.filter((r:Rec)=>r.kind==="metric"), values=records.filter((r:Rec)=>r.kind==="metric_value"), rocks=records.filter((r:Rec)=>r.kind==="rock"), todos=records.filter((r:Rec)=>r.kind==="todo"), headlines=records.filter((r:Rec)=>r.kind==="headline"), issues=records.filter((r:Rec)=>r.kind==="issue"&&r.payload.status!=="solved").sort(idsOrder);
+  const week=plannedScorecardWeek(records), nextMeetingWeek=addDaysISO(week,7);
+  const valueFor=(metricId:string)=>values.find((v:Rec)=>v.payload.metricId===metricId&&v.payload.week===week);
   const filterByReviewOwner=(record:Rec)=>reviewOwnerId==="all"||record.payload.ownerId===reviewOwnerId;
-  const reviewMetrics=sortRecordsByOwner(metrics.filter(filterByReviewOwner),reviewOwnerSort,ownerName), reviewRocks=sortRecordsByOwner(rocks.filter(filterByReviewOwner),reviewOwnerSort,ownerName), reviewTodos=sortRecordsByOwner(activeTodos.filter((todo:Rec)=>filterByReviewOwner(todo)&&(!todo.payload.dueDate||todo.payload.dueDate<=week)),reviewOwnerSort,ownerName);
+  const reviewMetrics=sortRecordsByOwner(metrics.filter(filterByReviewOwner),reviewOwnerSort,ownerName), reviewRocks=sortRecordsByOwner(rocks.filter(filterByReviewOwner),reviewOwnerSort,ownerName);
+  const reviewTodos=sortRecordsByOwner(todos.filter((todo:Rec)=>filterByReviewOwner(todo)&&(todoFilter==="done"?todo.payload.status==="done":todo.payload.status!=="done")),reviewOwnerSort,ownerName);
+  const assignedTodos=sortRecordsByOwner(todos.filter((todo:Rec)=>todo.payload.createdMeetingId===meetingId),"asc",ownerName);
   const ratedCount=owners.filter((owner:Rec)=>Number(ratings[owner.id])>=1&&Number(ratings[owner.id])<=10).length, allRated=owners.length>0&&ratedCount===owners.length;
   const sectionRemaining=Math.max(0,agenda[section].minutes*60-sectionSeconds), isIdsSection=section===5;
   const idsMinutePulse=isIdsSection&&[2,3,4,5].some(minute=>sectionRemaining<=minute*60&&sectionRemaining>minute*60-8);
   const timerWarning=sectionRemaining>0&&(sectionRemaining<=60||idsMinutePulse);
   function changeSection(next:number){setSection(next);setSectionSeconds(0);}
+  useEffect(()=>{
+    if(!running)return;
+    sectionHeading.current?.focus({preventScroll:true});
+    window.scrollTo({top:0,behavior:"instant"});
+  },[section,running]);
   useEffect(()=>{if(!running)return;const timer=setInterval(()=>{setSeconds(s=>s+1);setSectionSeconds(s=>s+1);},1000);return()=>clearInterval(timer);},[running]);
-  async function conclude(){if(!allRated)return;const meetingId=uid("meeting"),archivedAt=new Date().toISOString(),todosToArchive=activeTodos.filter((todo:Rec)=>!todo.payload.dueDate||todo.payload.dueDate<=week);const meetingRatings=owners.map((owner:Rec)=>({ownerId:owner.id,name:owner.payload.name,rating:ratings[owner.id]}));const rating=Math.round((meetingRatings.reduce((sum:number,item:any)=>sum+item.rating,0)/meetingRatings.length)*10)/10;await upsert({id:meetingId,kind:"meeting",payload:{date:new Date().toISOString().slice(0,10),scorecardWeek:week,nextScorecardWeek:nextMeetingWeek,durationSeconds:seconds,rating,ratings:meetingRatings,agenda:agenda.map((a,i)=>({...a,notes:notes[i]||""})),cascade,status:"complete",archivedTodoIds:todosToArchive.map((todo:Rec)=>todo.id)}});for(const todo of todosToArchive){await upsert({...todo,payload:{...todo.payload,archivedAt,archivedWeek:week,archivedMeetingId:meetingId}});}for(const metric of metrics){if(!values.some((value:Rec)=>value.payload.metricId===metric.id&&value.payload.week===nextMeetingWeek)){await upsert({id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week:nextMeetingWeek,ownerId:metric.payload.ownerId,value:null,status:"unreviewed",note:""}});}}setRunning(false);setSection(0);setSeconds(0);setSectionSeconds(0);setAgendaOpen(true);setReviewOwnerId("all");setReviewOwnerSort("asc");setRatings({});setNotes({});setCascade("");}
+  async function conclude(){
+    if(!allRated||concluding)return;
+    setConcluding(true);
+    try {
+      const meetingRatings=owners.map((owner:Rec)=>({ownerId:owner.id,name:owner.payload.name,rating:ratings[owner.id]}));
+      const rating=Math.round((meetingRatings.reduce((sum:number,item:any)=>sum+item.rating,0)/meetingRatings.length)*10)/10;
+      for(const metric of metrics){
+        if(!values.some((value:Rec)=>value.payload.metricId===metric.id&&value.payload.week===nextMeetingWeek)){
+          const savedValue=await upsert({id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week:nextMeetingWeek,ownerId:metric.payload.ownerId,value:null,status:"unreviewed",note:""}});
+          if(!savedValue)return;
+        }
+      }
+      const savedMeeting=await upsert({id:meetingId,kind:"meeting",payload:{date:new Date().toISOString().slice(0,10),scorecardWeek:week,nextScorecardWeek:nextMeetingWeek,durationSeconds:seconds,rating,ratings:meetingRatings,agenda:agenda.map(a=>({...a})),notes:meetingNotes,cascade,status:"complete",assignedTodoIds:assignedTodos.map((todo:Rec)=>todo.id),assignedTodos:assignedTodos.map((todo:Rec)=>({id:todo.id,title:todo.payload.title,ownerId:todo.payload.ownerId,ownerName:ownerName(todo.payload.ownerId),dueDate:todo.payload.dueDate,status:todo.payload.status}))}});
+      if(!savedMeeting)return;
+      setRunning(false);setSection(0);setSeconds(0);setSectionSeconds(0);setAgendaOpen(true);setReviewOwnerId("all");setReviewOwnerSort("asc");setTodoFilter("open");setRatings({});setMeetingNotes("");setCascade("");setMeetingId(uid("meeting"));
+      window.scrollTo({top:0,behavior:"instant"});
+    } finally {setConcluding(false);}
+  }
   function linkedIssue(sourceId:string){return records.find((r:Rec)=>r.kind==="issue"&&r.payload.sourceId===sourceId&&r.payload.status!=="solved");}
-  async function toggleIds(source:Rec,title:string,context:string){const existing=linkedIssue(source.id);if(existing){await remove(existing,`Remove “${existing.payload.title}” from the IDS list? The original ${source.kind==="metric"?"Scorecard item":source.kind==="todo"?"To-Do":source.kind==="rock"?"Rock":"Headline"} will remain unchanged.`);return;}await upsert({id:uid("issue"),kind:"issue",payload:{title,context,ownerId:source.payload.ownerId,priority:"",status:"open",resolution:"",sourceId:source.id,sourceKind:source.kind,sourceLabel:title}});}
-  async function markMetric(metric:Rec,status:string,value?:number|null){const existing=valueFor(metric.id);const valueRecord=existing||{id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week,ownerId:metric.payload.ownerId},sortKey:"",isSample:false,createdAt:Date.now(),updatedAt:Date.now()};await trackStatus(valueRecord,status,{metricId:metric.id,week,ownerId:metric.payload.ownerId,value:value??existing?.payload.value??null,note:existing?.payload.note||""});}
-  async function saveMetric(metric:Rec,raw:string){const existing=valueFor(metric.id);if(raw.trim()===""){if(existing)await upsert({...existing,payload:{...existing.payload,value:null,status:"unreviewed"}});return;}const value=Number(raw);const status=metric.payload.direction!=="lte"?(value>=metric.payload.target?"on-track":"off-track"):(value<=metric.payload.target?"on-track":"off-track");await markMetric(metric,status,value);}
-  async function solveIssue(issue:Rec){const resolution=(resolutions[issue.id]||"").trim();if(!resolution)return;await upsert({...issue,payload:{...issue.payload,resolution,status:"solved",solvedAt:new Date().toISOString()}});setResolutions(current=>({...current,[issue.id]:""}));}
-  const dropButton=(source:Rec,title:string,context:string)=>{const linked=linkedIssue(source.id);return <button className={`ids-drop ${linked?"linked":""}`} aria-pressed={Boolean(linked)} aria-label={linked?`Remove ${title} from IDS`:`Drop ${title} to IDS`} title={linked?"Select again to remove this item from IDS":"Add this item to IDS"} onClick={()=>toggleIds(source,title,context)}>{linked?"In IDS":"Drop Down"}{linked?<X size={15}/>:<ChevronRight size={15}/>}</button>;};
+  async function toggleIds(source:Rec,title:string,context:string){
+    const existing=linkedIssue(source.id);
+    if(existing){await remove(existing,`Remove “${existing.payload.title}” from the IDS list? The original item will remain unchanged.`);return;}
+    await upsert({id:uid("issue"),kind:"issue",payload:{title,context,ownerId:source.payload.ownerId,priority:"",status:"open",resolution:"",sourceId:source.id,sourceKind:source.kind,sourceLabel:title}});
+  }
+  async function markMetric(metric:Rec,status:string,value?:number|null){
+    const existing=valueFor(metric.id);
+    const valueRecord=existing||{id:uid("value"),kind:"metric_value",payload:{metricId:metric.id,week,ownerId:metric.payload.ownerId},sortKey:"",isSample:false,createdAt:Date.now(),updatedAt:Date.now()};
+    await trackStatus(valueRecord,status,{metricId:metric.id,week,ownerId:metric.payload.ownerId,value:value??existing?.payload.value??null,note:existing?.payload.note||""});
+  }
+  async function saveMetric(metric:Rec,raw:string){
+    const existing=valueFor(metric.id);
+    if(raw.trim()===""){if(existing)await upsert({...existing,payload:{...existing.payload,value:null,status:"unreviewed"}});return;}
+    const value=Number(raw);
+    const status=metric.payload.direction!=="lte"?(value>=metric.payload.target?"on-track":"off-track"):(value<=metric.payload.target?"on-track":"off-track");
+    await markMetric(metric,status,value);
+  }
+  async function solveIssue(issue:Rec){
+    if(solvingId)return;
+    setSolvingId(issue.id);
+    try {await upsert({...issue,payload:{...issue.payload,priority:"",status:"solved",solvedAt:new Date().toISOString()}});}
+    finally {setSolvingId("");}
+  }
+  const dropButton=(source:Rec,title:string,context:string)=>{
+    const linked=linkedIssue(source.id);
+    return <button className={`ids-drop ${linked?"linked":""}`} aria-pressed={Boolean(linked)} aria-label={linked?`Remove ${title} from IDS`:`Drop ${title} to IDS`} title={linked?"Select again to remove this item from IDS":"Add this item to IDS"} onClick={()=>toggleIds(source,title,context)}>{linked?"In IDS":"Drop Down"}{linked?<X size={15}/>:<ChevronRight size={15}/>}</button>;
+  };
 
-  const reviewContent = section===1 ? <><div className="meeting-scorecard-date"><CalendarDays size={21}/><div><span>SCORECARD ENTRY WEEK</span><strong>Week of {dateLabel(week)}</strong></div></div><div className="meeting-review-list">{reviewMetrics.map((metric:Rec)=>{const value=valueFor(metric.id);const status=value?.payload.value!=null?((metric.payload.direction!=="lte"?value.payload.value>=metric.payload.target:value.payload.value<=metric.payload.target)?"on-track":"off-track"):"unreviewed";return <article className="meeting-review" key={metric.id}><div className="review-main"><span className="review-type">SCORECARD</span><strong>{metric.payload.name}</strong><small><OwnerPill name={ownerName(metric.payload.ownerId)}/> Goal {metric.payload.direction!=="lte"?"≥":"≤"} {metric.payload.target}{metric.payload.unit==="%"?"%":` ${metric.payload.unit}`}</small></div><div className="meeting-value"><input aria-label={`${metric.payload.name} value`} type="number" defaultValue={value?.payload.value??""} key={`${metric.id}-${value?.payload.value}`} onBlur={e=>saveMetric(metric,e.target.value)} placeholder="Value"/><span>{metric.payload.unit==="%"?"%":""}</span></div><div className="review-status"><button className={status==="on-track"?"active good":""} onClick={()=>markMetric(metric,"on-track")}><CheckCircle2 size={16}/> On Track</button><button className={status==="off-track"?"active bad":""} onClick={()=>markMetric(metric,"off-track")}><AlertTriangle size={16}/> Off Track</button></div>{dropButton(metric,`${metric.payload.name} is off target`,`Dropped from the ${dateLabel(week)} scorecard review. Goal: ${metric.payload.direction!=="lte"?"at least":"at most"} ${metric.payload.target}${metric.payload.unit==="%"?"%":` ${metric.payload.unit}`}; current value: ${value?.payload.value??"not entered"}.`)}</article>})}{!metrics.length?<Empty icon={BarChart3} title="No scorecard measurables" copy="Add them from the Scorecard screen before the meeting."/>:!reviewMetrics.length&&<Empty icon={Users} title="No Scorecard items for this owner" copy="Choose another owner or return to the Whole team view."/>}</div></>
-  : section===2 ? <div className="meeting-review-list">{reviewRocks.map((rock:Rec)=>{const rockStatus=rock.payload.status==="off-track"?"off-track":"on-track";return <article className="meeting-review" key={rock.id}><div className="review-main"><span className="review-type">{rock.payload.quarter||"QUARTERLY ROCK"}</span><strong>{rock.payload.title}</strong><small><OwnerPill name={ownerName(rock.payload.ownerId)}/> Due {dateLabel(rock.payload.dueDate)}</small></div><div className="review-status"><button className={rockStatus==="on-track"?"active good":""} onClick={()=>trackStatus(rock,"on-track")}><CheckCircle2 size={16}/> On Track</button><button className={rockStatus==="off-track"?"active bad":""} onClick={()=>trackStatus(rock,"off-track")}><AlertTriangle size={16}/> Off Track</button></div>{dropButton(rock,`Rock off track: ${rock.payload.title}`,`Dropped from Rock Review. Due ${dateLabel(rock.payload.dueDate)}.`)}</article>})}{!rocks.length?<Empty icon={Milestone} title="No Rocks to review" copy="Add quarterly priorities from the Rocks screen."/>:!reviewRocks.length&&<Empty icon={Users} title="No Rocks for this owner" copy="Choose another owner or return to the Whole team view."/>}</div>
-  : section===3 ? <div className="meeting-review-list">{headlines.map((headline:Rec)=><article className="meeting-review headline-review" key={headline.id}><div className={`headline-icon ${headline.payload.tone}`}><MessageSquareText size={18}/></div><div className="review-main"><span className="review-type">{headline.payload.tone==="good"?"GOOD NEWS":"WATCH ITEM"}</span><strong>{headline.payload.title}</strong><small><OwnerPill name={ownerName(headline.payload.ownerId)}/> {headline.payload.detail}</small></div>{dropButton(headline,headline.payload.title,headline.payload.detail||"Dropped from Headlines.")}</article>)}{!headlines.length&&<Empty icon={MessageSquareText} title="No headlines" copy="Capture headlines during the week so they are ready here."/>}</div>
-  : section===4 ? <div className="meeting-review-list">{reviewTodos.map((todo:Rec)=><article className="meeting-review" key={todo.id}><div className="review-main"><span className="review-type">TO-DO</span><strong>{todo.payload.title}</strong><small><OwnerPill name={ownerName(todo.payload.ownerId)}/> Due {dateLabel(todo.payload.dueDate)}</small></div><div className="review-status"><button className={todo.payload.status==="done"?"active done":""} onClick={()=>trackStatus(todo,"done",{completedAt:new Date().toISOString()})}><Check size={16}/> Done</button><button className={todo.payload.status!=="done"?"active bad":""} onClick={()=>trackStatus(todo,"open",{completedAt:null})}><X size={16}/> Not Done</button></div>{dropButton(todo,`To-Do not done: ${todo.payload.title}`,`Dropped from To-Do Review. Due ${dateLabel(todo.payload.dueDate)}.`)}</article>)}{!activeTodos.length?<Empty icon={ListChecks} title="No To-Dos to review" copy="New actions created during this meeting will be due for the next L10."/>:!reviewTodos.length&&<Empty icon={Users} title="No To-Dos due for this view" copy="Choose another owner, or continue—the newer commitments will stay active for the next L10."/>}</div>
-  : section===5 ? <div className="ids-workspace"><div className="meeting-ids-header"><div><strong>{issues.filter((issue:Rec)=>idsRank(issue)).length} of 3 selected</strong><span>Assign 1, 2, and 3 to the next issues the group will discuss. Solving one frees its number for the next item.</span></div><button onClick={openIssue}><Plus size={16}/> Add IDS item</button></div>{issues.map((issue:Rec)=><article className={`ids-work-item ${idsRank(issue)?"ranked":""}`} key={issue.id}><div className={`issue-number ${idsRank(issue)?"ranked":""}`}>{idsRank(issue)||"—"}</div><div><div className="ids-work-head"><label className="ids-rank-control inline"><span>Discuss</span><select aria-label={`Discussion order for ${issue.payload.title}`} value={idsRank(issue)} onChange={e=>assignIdsRank(issue,e.target.value,records,upsert)}><option value="">Backlog</option><option value="1">1 — First</option><option value="2">2 — Second</option><option value="3">3 — Third</option></select></label>{issue.payload.sourceKind&&<span className="source-chip">From {issue.payload.sourceKind.replace("metric_value","scorecard")}</span>}</div><h3>{issue.payload.title}</h3><p>{issue.payload.context}</p><IdsTodoComposer issue={issue} todos={todos} owners={owners} upsert={upsert} nextMeetingWeek={nextMeetingWeek}/><div className="ids-solve"><input value={resolutions[issue.id]||""} onChange={e=>setResolutions(current=>({...current,[issue.id]:e.target.value}))} placeholder="Record the decision or solution…"/><button disabled={!(resolutions[issue.id]||"").trim()} onClick={()=>solveIssue(issue)}><CheckCircle2 size={16}/> Mark solved</button></div></div></article>)}{!issues.length&&<Empty icon={CheckCircle2} title="IDS queue is clear" copy="Add an issue here or use Drop Down during the earlier review sections."/>}</div> : null;
+  const reviewContent = section===1 ? <>
+    <div className="meeting-scorecard-date"><CalendarDays size={21}/><div><span>SCORECARD ENTRY WEEK</span><strong>Week of {dateLabel(week)}</strong></div></div>
+    <div className="meeting-review-list">{reviewMetrics.map((metric:Rec)=>{
+      const value=valueFor(metric.id);
+      const status=["on-track","off-track"].includes(value?.payload.status)?value.payload.status:"unreviewed";
+      return <article className="meeting-review" key={metric.id}>
+        <div className="review-main"><span className="review-type">SCORECARD</span><strong>{metric.payload.name}</strong><small><OwnerPill name={ownerName(metric.payload.ownerId)}/> Goal {metric.payload.direction!=="lte"?"≥":"≤"} {metric.payload.target}{metric.payload.unit==="%"?"%":` ${metric.payload.unit}`}</small></div>
+        <div className="meeting-value"><input aria-label={`${metric.payload.name} value`} type="number" defaultValue={value?.payload.value??""} key={`${metric.id}-${value?.payload.value}`} onBlur={e=>{if(e.target.value!==String(value?.payload.value??""))saveMetric(metric,e.target.value);}} placeholder="Value"/><span>{metric.payload.unit==="%"?"%":""}</span></div>
+        <div className="review-status"><button aria-pressed={status==="on-track"} className={status==="on-track"?"active good":""} onClick={()=>markMetric(metric,"on-track")}><CheckCircle2 size={16}/> On Track</button><button aria-pressed={status==="off-track"} className={status==="off-track"?"active bad":""} onClick={()=>markMetric(metric,"off-track")}><AlertTriangle size={16}/> Off Track</button></div>
+        {dropButton(metric,metric.payload.name,`Dropped from the ${dateLabel(week)} scorecard review. Goal: ${metric.payload.direction!=="lte"?"at least":"at most"} ${metric.payload.target}${metric.payload.unit==="%"?"%":` ${metric.payload.unit}`}; current value: ${value?.payload.value??"not entered"}.`)}
+      </article>;
+    })}{!metrics.length?<Empty icon={BarChart3} title="No scorecard measurables" copy="Add them from the Scorecard screen before the meeting."/>:!reviewMetrics.length&&<Empty icon={Users} title="No Scorecard items for this owner" copy="Choose another owner or return to the Whole team view."/>}</div>
+  </>
+  : section===2 ? <div className="meeting-review-list">{reviewRocks.map((rock:Rec)=>{
+    const rockStatus=rock.payload.status==="off-track"?"off-track":"on-track";
+    return <article className="meeting-review" key={rock.id}>
+      <div className="review-main"><span className="review-type">{rock.payload.quarter||"QUARTERLY ROCK"}</span><strong>{rock.payload.title}</strong><small><OwnerPill name={ownerName(rock.payload.ownerId)}/> Due {dateLabel(rock.payload.dueDate)}</small></div>
+      <div className="review-status"><button aria-pressed={rockStatus==="on-track"} className={rockStatus==="on-track"?"active good":""} onClick={()=>trackStatus(rock,"on-track")}><CheckCircle2 size={16}/> On Track</button><button aria-pressed={rockStatus==="off-track"} className={rockStatus==="off-track"?"active bad":""} onClick={()=>trackStatus(rock,"off-track")}><AlertTriangle size={16}/> Off Track</button></div>
+      {dropButton(rock,rock.payload.title,`Dropped from Rock Review. Due ${dateLabel(rock.payload.dueDate)}.`)}
+    </article>;
+  })}{!rocks.length?<Empty icon={Milestone} title="No Rocks to review" copy="Add quarterly priorities from the Rocks screen."/>:!reviewRocks.length&&<Empty icon={Users} title="No Rocks for this owner" copy="Choose another owner or return to the Whole team view."/>}</div>
+  : section===3 ? <div className="meeting-review-list">{headlines.map((headline:Rec)=><article className="meeting-review headline-review" key={headline.id}>
+    <div className={`headline-icon ${headline.payload.tone}`}><MessageSquareText size={18}/></div>
+    <div className="review-main"><span className="review-type">{headline.payload.tone==="good"?"GOOD NEWS":"WATCH ITEM"}</span><strong>{headline.payload.title}</strong><small><OwnerPill name={ownerName(headline.payload.ownerId)}/> {headline.payload.detail}</small></div>
+    {dropButton(headline,headline.payload.title,headline.payload.detail||"Dropped from Headlines.")}
+  </article>)}{!headlines.length&&<Empty icon={MessageSquareText} title="No headlines" copy="Capture headlines during the week so they are ready here."/>}</div>
+  : section===4 ? <>
+    <div className="filter-tabs meeting-todo-tabs" aria-label="Meeting To-Do status"><button className={todoFilter==="open"?"active":""} onClick={()=>setTodoFilter("open")}>Open ({todos.filter((todo:Rec)=>todo.payload.status!=="done").length})</button><button className={todoFilter==="done"?"active":""} onClick={()=>setTodoFilter("done")}>Done ({todos.filter((todo:Rec)=>todo.payload.status==="done").length})</button></div>
+    <div className="meeting-review-list">{reviewTodos.map((todo:Rec)=><article className="meeting-review" key={todo.id}>
+      <div className="review-main"><span className="review-type">TO-DO</span><strong>{todo.payload.title}</strong><small><OwnerPill name={ownerName(todo.payload.ownerId)}/> Due {dateLabel(todo.payload.dueDate)}</small></div>
+      <div className="review-status"><button aria-pressed={todo.payload.status==="done"} className={todo.payload.status==="done"?"active done":""} onClick={()=>trackStatus(todo,"done",{completedAt:new Date().toISOString()})}><Check size={16}/> Done</button><button aria-pressed={todo.payload.status!=="done"} className={todo.payload.status!=="done"?"active bad":""} onClick={()=>trackStatus(todo,"open",{completedAt:null})}><X size={16}/> Not Done</button></div>
+      {dropButton(todo,todo.payload.title,`Dropped from To-Do Review. Due ${dateLabel(todo.payload.dueDate)}.`)}
+    </article>)}{!reviewTodos.length&&<Empty icon={ListChecks} title={todoFilter==="done"?"No completed To-Dos in this view":"No open To-Dos in this view"} copy="Choose another owner or add a commitment below."/>}</div>
+  </>
+  : section===5 ? <div className="ids-workspace">
+    <div className="meeting-ids-header"><div><strong>{issues.filter((issue:Rec)=>idsRank(issue)).length} of 3 selected</strong><span>Assign 1, 2, and 3 to the next issues the group will discuss. Solving one frees its number for the next item.</span></div><button onClick={openIssue}><Plus size={16}/> Add IDS item</button></div>
+    {issues.map((issue:Rec)=><article className={`ids-work-item ${idsRank(issue)?"ranked":""}`} key={issue.id}>
+      <div className={`issue-number ${idsRank(issue)?"ranked":""}`}>{idsRank(issue)||"—"}</div>
+      <div><div className="ids-work-head"><label className="ids-rank-control inline"><span>Discuss</span><select aria-label={`Discussion order for ${issue.payload.title}`} value={idsRank(issue)} onChange={e=>assignIdsRank(issue,e.target.value,records,upsert)}><option value="">Backlog</option><option value="1">1 — First</option><option value="2">2 — Second</option><option value="3">3 — Third</option></select></label>{issue.payload.sourceKind&&<span className="source-chip">From {issue.payload.sourceKind.replace("metric_value","scorecard")}</span>}</div>
+        <h3>{issue.payload.title}</h3><p>{issue.payload.context}</p>
+        <MeetingTodoComposer issue={issue} todos={todos} owners={owners} upsert={upsert} nextMeetingWeek={nextMeetingWeek} meetingId={meetingId} sectionName="IDS"/>
+        <div className="ids-solve"><button disabled={Boolean(solvingId)} onClick={()=>solveIssue(issue)}><CheckCircle2 size={16}/> {solvingId===issue.id?"Saving…":"Mark solved"}</button></div>
+      </div>
+    </article>)}
+    {!issues.length&&<Empty icon={CheckCircle2} title="IDS queue is clear" copy="Add an issue here or use Drop Down during the earlier review sections."/>}
+  </div> : null;
 
   const reviewOwnerFilter = [1,2,4].includes(section) ? <div className="meeting-owner-filter"><div><Users size={18}/><span>Review by owner</span></div><div className="meeting-owner-controls"><label><span>Show</span><select aria-label="Filter meeting review by owner" value={reviewOwnerId} onChange={e=>setReviewOwnerId(e.target.value)}><option value="all">Whole team</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Sort</span><select aria-label="Sort meeting review by owner" value={reviewOwnerSort} onChange={e=>setReviewOwnerSort(e.target.value)}><option value="asc">Last name A–Z</option><option value="desc">Last name Z–A</option><option value="default">Existing order</option></select></label></div></div> : null;
 
-  return <><PageHead eyebrow="PARK'S 60-MINUTE WORKFLOW" title="Level 10 Meeting" subtitle="Review the live Scorecard, Rocks, and To-Dos; drop exceptions into IDS once; solve and record the decision."/>
-    {!running ? <div className="meeting-launch"><div className="launch-visual"><ParkLogo/><div className="timer-ring"><strong>60</strong><span>MIN</span></div><span>Safety & People</span></div><div><span className="eyebrow">READY WHEN THE TEAM IS</span><h2>Run one connected meeting</h2><p>The agenda is tailored to Park&apos;s one-hour cadence. Statuses update the same shared records, anything dropped follows you into IDS, and the session is saved to permanent history.</p><div className="agenda-preview">{agenda.map((a,i)=><div key={a.name}><b>{i+1}</b><span>{a.name}</span><strong>{a.minutes}m</strong></div>)}</div><button className="primary-btn large" onClick={()=>setRunning(true)}><Zap size={18}/> Start today&apos;s meeting</button></div></div> :
-      <div className="meeting-runner"><div className="runner-top"><button className="agenda-toggle" aria-expanded={agendaOpen} onClick={()=>setAgendaOpen(open=>!open)}><Menu size={16}/>{agendaOpen?"Hide agenda":"Show agenda"}</button><div className="meeting-live"><span className="live-dot"/> MEETING IN PROGRESS · 60 MIN TARGET</div><div className={`meeting-timer ${timerWarning?"time-warning":""} ${sectionRemaining===0?"time-up":""}`} role="timer" aria-label={`${agenda[section].name} time remaining`}><span>{agenda[section].name} remaining</span><strong>{timeLabel(sectionRemaining)}</strong><small>{timeLabel(seconds)} total</small></div><button onClick={()=>setRunning(false)}>Pause</button></div><div className={`runner-grid ${agendaOpen?"":"agenda-collapsed"}`}>{agendaOpen&&<aside>{agenda.map((a,i)=><button key={a.name} className={section===i?"active":section>i?"done":""} onClick={()=>changeSection(i)}><i>{section>i?<Check size={14}/>:i+1}</i><span>{a.name}<small>{a.minutes} minutes</small></span></button>)}</aside>}<section><div className="section-kicker">STEP {section+1} OF {agenda.length} · {agenda[section].minutes} MINUTES</div><h2>{agenda[section].name}</h2><p>{agenda[section].note}</p>{reviewOwnerFilter}{reviewContent}{(section===0||section===3)&&<textarea className="meeting-notes" value={notes[section]||""} onChange={e=>setNotes({...notes,[section]:e.target.value})} placeholder={`Capture ${agenda[section].name.toLowerCase()} notes…`}/>} {section>0&&section<6&&<textarea className="meeting-notes compact" value={notes[section]||""} onChange={e=>setNotes({...notes,[section]:e.target.value})} placeholder="Optional section notes…"/>}
-        {section===6&&<div className="conclude-grid"><label className="form-field"><span>Meeting notes</span><textarea value={notes[section]||""} onChange={e=>setNotes({...notes,[section]:e.target.value})} placeholder="Final decisions, reminders, or follow-up…"/></label><label className="form-field"><span>Messages to cascade</span><textarea value={cascade} onChange={e=>setCascade(e.target.value)} placeholder="What should be shared outside this room?"/></label><div className="team-rating-panel"><div className="team-rating-head"><div><span className="eyebrow">LIVE RATING ROLL CALL</span><h3>Rate the meeting together</h3><p>Go around the room and record each person&apos;s spoken score. Everyone&apos;s rating remains visible to the team.</p></div><strong>{ratedCount} of {owners.length} complete</strong></div>{owners.map((owner:Rec)=><div className="team-rating-row" key={owner.id}><OwnerPill name={owner.payload.name}/><div className="rating-scale" role="group" aria-label={`${owner.payload.name}'s meeting rating`}>{[1,2,3,4,5,6,7,8,9,10].map(score=><button type="button" key={score} aria-pressed={ratings[owner.id]===score} className={ratings[owner.id]===score?"active":""} onClick={()=>setRatings(current=>({...current,[owner.id]:score}))}>{score}</button>)}</div><output>{ratings[owner.id]?`${ratings[owner.id]}/10`:"Waiting"}</output></div>)}{!owners.length&&<div className="rating-required"><AlertTriangle size={18}/><span>Add team members in Team &amp; Setup before concluding a meeting.</span></div>}<div className={`rating-required ${allRated?"complete":""}`}>{allRated?<CheckCircle2 size={18}/>:<Users size={18}/>}<span>{allRated?"All ratings are recorded. The meeting is ready to conclude.":`${owners.length-ratedCount} rating${owners.length-ratedCount===1?"":"s"} still needed before this meeting can be saved.`}</span></div></div></div>}
-        <div className="runner-actions"><button disabled={section===0} onClick={()=>changeSection(section-1)}>Back</button>{section<6?<button className="primary-btn" onClick={()=>changeSection(section+1)}>Next: {agenda[section+1].name}<ChevronRight size={16}/></button>:<button className="primary-btn" disabled={!allRated} title={!allRated?"Record a rating for every team member first":"Save the completed meeting"} onClick={conclude}><Save size={16}/> Save &amp; conclude</button>}</div></section></div></div>}
-    <div className="history-panel"><div className="panel-head"><div><span className="eyebrow">MEETING MEMORY</span><h2>Session history</h2></div></div>{meetings.map((m:Rec)=><div className="meeting-history" key={m.id}><div className="date-tile"><strong>{new Date(m.payload.date+"T12:00:00Z").getUTCDate()}</strong><span>{new Intl.DateTimeFormat("en-US",{month:"short",timeZone:"UTC"}).format(new Date(m.payload.date+"T12:00:00Z"))}</span></div><div><strong>Safety & People Level 10</strong><span>{Math.round(m.payload.durationSeconds/60)} minutes · {m.payload.agenda?.filter((a:any)=>a.notes).length||0} sections with notes</span>{Array.isArray(m.payload.ratings)&&<div className="history-ratings">{m.payload.ratings.map((item:any)=><span key={item.ownerId||item.name}><b>{item.name}</b> {item.rating}/10</span>)}</div>}</div><span className="meeting-rating">{Number(m.payload.rating).toFixed(Number(m.payload.rating)%1?1:0)}<small>/10 avg</small></span></div>)}{!meetings.length&&<Empty icon={History} title="No completed meetings yet" copy="The first concluded session will appear here."/ >}</div></>;
+  return <>
+    <PageHead eyebrow="PARK'S 60-MINUTE WORKFLOW" title="Level 10 Meeting" subtitle="Review the live Scorecard, Rocks, and To-Dos; add items to IDS and assign the next actions together."/>
+    {!running ? <div className="meeting-launch">
+      <div className="launch-visual"><ParkLogo/><div className="timer-ring"><strong>60</strong><span>MIN</span></div><span>Safety & People</span></div>
+      <div><span className="eyebrow">READY WHEN THE TEAM IS</span><h2>Run one connected meeting</h2><p>The agenda is tailored to Park&apos;s one-hour cadence. Statuses update the same shared records, anything dropped follows you into IDS, and the session is saved to permanent history.</p><div className="agenda-preview">{agenda.map((a,i)=><div key={a.name}><b>{i+1}</b><span>{a.name}</span><strong>{a.minutes}m</strong></div>)}</div><button className="primary-btn large" onClick={()=>setRunning(true)}><Zap size={18}/> {seconds>0?"Resume meeting":"Start today's meeting"}</button></div>
+    </div> : <div className="meeting-runner">
+      <div className="runner-top"><button className="agenda-toggle" aria-expanded={agendaOpen} onClick={()=>setAgendaOpen(open=>!open)}><Menu size={16}/>{agendaOpen?"Hide agenda":"Show agenda"}</button><div className="meeting-live"><span className="live-dot"/> MEETING IN PROGRESS · 60 MIN TARGET</div><div className={`meeting-timer ${timerWarning?"time-warning":""} ${sectionRemaining===0?"time-up":""}`} role="timer" aria-label={`${agenda[section].name} time remaining`}><span>{agenda[section].name} remaining</span><strong>{timeLabel(sectionRemaining)}</strong><small>{timeLabel(seconds)} total</small></div><button onClick={()=>setRunning(false)}>Pause</button></div>
+      <div className={`runner-grid ${agendaOpen?"":"agenda-collapsed"}`}>
+        {agendaOpen&&<aside>{agenda.map((a,i)=><button key={a.name} className={section===i?"active":section>i?"done":""} onClick={()=>changeSection(i)}><i>{section>i?<Check size={14}/>:i+1}</i><span>{a.name}<small>{a.minutes} minutes</small></span></button>)}</aside>}
+        <section>
+          <div className="section-kicker">STEP {section+1} OF {agenda.length} · {agenda[section].minutes} MINUTES</div>
+          <h2 ref={sectionHeading} tabIndex={-1}>{agenda[section].name}</h2><p>{agenda[section].note}</p>
+          {reviewOwnerFilter}{reviewContent}
+          {section>0&&section<6&&<MeetingTodoComposer key={section} owners={owners} todos={todos} upsert={upsert} nextMeetingWeek={nextMeetingWeek} meetingId={meetingId} sectionName={agenda[section].name}/>}
+          {section===6&&<div className="conclude-grid">
+            <div className="meeting-todo-recap"><div className="meeting-recap-head"><div><span className="eyebrow">ASSIGNED THIS MEETING</span><h3>To-Do recap</h3></div><strong>{assignedTodos.length} To-Do{assignedTodos.length===1?"":"s"}</strong></div>
+              {assignedTodos.map((todo:Rec)=><div className="meeting-recap-row" key={todo.id}><strong>{todo.payload.title}</strong><OwnerPill name={ownerName(todo.payload.ownerId)}/><span>Due {dateLabel(todo.payload.dueDate)}</span><span className={`status ${todo.payload.status==="done"?"on-track":"open"}`}>{todo.payload.status==="done"?"Done":"Open"}</span></div>)}
+              {!assignedTodos.length&&<Empty icon={ListChecks} title="No To-Dos assigned this meeting" copy="Commitments added during Scorecard, Rocks, Headlines, To-Do Review, or IDS will appear here."/>}
+            </div>
+            <label className="form-field"><span>Meeting notes</span><textarea value={meetingNotes} onChange={e=>setMeetingNotes(e.target.value)} placeholder="Final decisions, reminders, or follow-up…"/></label>
+            <label className="form-field"><span>Messages to cascade</span><textarea value={cascade} onChange={e=>setCascade(e.target.value)} placeholder="What should be shared outside this room?"/></label>
+            <div className="team-rating-panel"><div className="team-rating-head"><div><span className="eyebrow">LIVE RATING ROLL CALL</span><h3>Rate the meeting together</h3><p>Go around the room and record each person&apos;s spoken score. Everyone&apos;s rating remains visible to the team.</p></div><strong>{ratedCount} of {owners.length} complete</strong></div>
+              {owners.map((owner:Rec)=><div className="team-rating-row" key={owner.id}><OwnerPill name={owner.payload.name}/><div className="rating-scale" role="group" aria-label={`${owner.payload.name}'s meeting rating`}>{[1,2,3,4,5,6,7,8,9,10].map(score=><button type="button" key={score} aria-pressed={ratings[owner.id]===score} className={ratings[owner.id]===score?"active":""} onClick={()=>setRatings(current=>({...current,[owner.id]:score}))}>{score}</button>)}</div><output>{ratings[owner.id]?`${ratings[owner.id]}/10`:"Waiting"}</output></div>)}
+              {!owners.length&&<div className="rating-required"><AlertTriangle size={18}/><span>Add team members in Team &amp; Setup before concluding a meeting.</span></div>}
+              <div className={`rating-required ${allRated?"complete":""}`}>{allRated?<CheckCircle2 size={18}/>:<Users size={18}/>}<span>{allRated?"All ratings are recorded. The meeting is ready to conclude.":`${owners.length-ratedCount} rating${owners.length-ratedCount===1?"":"s"} still needed before this meeting can be saved.`}</span></div>
+            </div>
+          </div>}
+          <div className="runner-actions"><button disabled={section===0||concluding} onClick={()=>changeSection(section-1)}>Back</button>{section<6?<button className="primary-btn" onClick={()=>changeSection(section+1)}>Next: {agenda[section+1].name}<ChevronRight size={16}/></button>:<button className="primary-btn" disabled={!allRated||concluding} title={!allRated?"Record a rating for every team member first":"Save the completed meeting"} onClick={conclude}><Save size={16}/> {concluding?"Saving…":"Save & conclude"}</button>}</div>
+        </section>
+      </div>
+    </div>}
+    <div className="history-panel"><div className="panel-head"><div><span className="eyebrow">MEETING MEMORY</span><h2>Session history</h2></div></div>
+      {meetings.map((m:Rec)=><div className="meeting-history" key={m.id}>
+        <div className="date-tile"><strong>{new Date(m.payload.date+"T12:00:00Z").getUTCDate()}</strong><span>{new Intl.DateTimeFormat("en-US",{month:"short",timeZone:"UTC"}).format(new Date(m.payload.date+"T12:00:00Z"))}</span></div>
+        <div><strong>Safety & People Level 10</strong><span>{Math.round(m.payload.durationSeconds/60)} minutes · {Array.isArray(m.payload.assignedTodos)?`${m.payload.assignedTodos.length} To-Dos assigned`:`${m.payload.agenda?.filter((a:any)=>a.notes).length||0} sections with notes`}</span>
+          {Array.isArray(m.payload.assignedTodos)&&m.payload.assignedTodos.length>0&&<details className="history-todo-recap"><summary>View assigned To-Dos</summary>{m.payload.assignedTodos.map((todo:any)=><div key={todo.id}><strong>{todo.title}</strong><span>{todo.ownerName||ownerName(todo.ownerId)} · Due {dateLabel(todo.dueDate)}</span></div>)}</details>}
+          {Array.isArray(m.payload.ratings)&&<div className="history-ratings">{m.payload.ratings.map((item:any)=><span key={item.ownerId||item.name}><b>{item.name}</b> {item.rating}/10</span>)}</div>}
+        </div>
+        <span className="meeting-rating">{Number(m.payload.rating).toFixed(Number(m.payload.rating)%1?1:0)}<small>/10 avg</small></span>
+      </div>)}
+      {!meetings.length&&<Empty icon={History} title="No completed meetings yet" copy="The first concluded session will appear here."/>}
+    </div>
+  </>;
 }
 
-function IdsTodoComposer({ issue, todos, owners, upsert, nextMeetingWeek }: any) {
-  const linkedTodo = todos.find((todo: Rec) => todo.payload.sourceIssueId === issue.id && !todo.payload.archivedAt);
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState({ title: linkedTodo?.payload.title || issue.payload.title || "", ownerId: linkedTodo?.payload.ownerId || issue.payload.ownerId || "", dueDate: linkedTodo?.payload.dueDate || nextMeetingWeek });
-  useEffect(() => {
-    setData({ title: linkedTodo?.payload.title || issue.payload.title || "", ownerId: linkedTodo?.payload.ownerId || issue.payload.ownerId || "", dueDate: linkedTodo?.payload.dueDate || nextMeetingWeek });
-  }, [linkedTodo?.id, linkedTodo?.updatedAt, issue.id, issue.payload.title, issue.payload.ownerId, nextMeetingWeek]);
-  async function saveTodo() {
-    if (!data.title.trim() || !data.ownerId || !data.dueDate) return;
-    await upsert({
-      ...(linkedTodo || {}), id: linkedTodo?.id || uid("todo"), kind: "todo",
-      payload: { ...(linkedTodo?.payload || {}), title: data.title.trim(), ownerId: data.ownerId, dueDate: data.dueDate, status: linkedTodo?.payload.status || "open", completedAt: linkedTodo?.payload.completedAt || null, source: "Created during IDS", sourceIssueId: issue.id },
-    });
-    setOpen(false);
+function MeetingTodoComposer({ issue, todos, owners, upsert, nextMeetingWeek, meetingId, sectionName }: any) {
+  const linkedTodo=issue?todos.find((todo:Rec)=>todo.payload.sourceIssueId===issue.id&&todo.payload.createdMeetingId===meetingId):undefined;
+  const [open,setOpen]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState(""),[savedTitle,setSavedTitle]=useState("");
+  const [data,setData]=useState({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});
+  useEffect(()=>{
+    setData({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});
+  },[linkedTodo?.id,linkedTodo?.updatedAt,nextMeetingWeek]);
+  function toggleEditor(){
+    if(!open){setError("");setData({title:linkedTodo?.payload.title||"",ownerId:linkedTodo?.payload.ownerId||"",dueDate:linkedTodo?.payload.dueDate||nextMeetingWeek});}
+    setOpen(value=>!value);
   }
-  return <div className={`ids-todo-composer ${linkedTodo ? "saved" : ""}`}>
-    <div className="ids-todo-summary"><div><ListChecks size={17}/><span>{linkedTodo ? <><strong>Next-meeting To-Do saved</strong><small>{linkedTodo.payload.title} · Due {dateLabel(linkedTodo.payload.dueDate)}</small></> : <><strong>Turn the solution into an accountable action</strong><small>Save a To-Do for the next L10 on {dateLabel(nextMeetingWeek)}.</small></>}</span></div><button onClick={() => setOpen(value => !value)}>{linkedTodo ? <Pencil size={15}/> : <Plus size={15}/>} {open ? "Close editor" : linkedTodo ? "Edit To-Do" : "Add to To-Dos"}</button></div>
-    {open && <div className="ids-todo-fields"><label><span>To-Do</span><input value={data.title} onChange={event => setData(current => ({ ...current, title: event.target.value }))} placeholder="Enter the commitment"/></label><label><span>Owner</span><select value={data.ownerId} onChange={event => setData(current => ({ ...current, ownerId: event.target.value }))}><option value="">Select owner</option>{owners.map((owner: Rec) => <option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label><label><span>Due for next L10</span><input type="date" value={data.dueDate} onChange={event => setData(current => ({ ...current, dueDate: event.target.value }))}/></label><button className="primary-btn" disabled={!data.title.trim() || !data.ownerId || !data.dueDate} onClick={saveTodo}><Save size={15}/> {linkedTodo ? "Save changes" : "Save To-Do"}</button></div>}
+  async function saveTodo(event:React.FormEvent){
+    event.preventDefault();
+    if(!data.title.trim()||!data.ownerId||!data.dueDate||saving)return;
+    setSaving(true);setError("");
+    try {
+      const saved=await upsert({
+        ...(linkedTodo||{}),id:linkedTodo?.id||uid("todo"),kind:"todo",
+        payload:{...(linkedTodo?.payload||{}),title:data.title.trim(),ownerId:data.ownerId,dueDate:data.dueDate,status:linkedTodo?.payload.status||"open",completedAt:linkedTodo?.payload.completedAt||null,source:`Created during ${sectionName}`,...(issue?{sourceIssueId:issue.id}:{}),createdMeetingId:meetingId}
+      });
+      if(!saved){setError("This To-Do could not be saved. Your entry is still here—please try again.");return;}
+      setSavedTitle(data.title.trim());setOpen(false);setData({title:"",ownerId:"",dueDate:nextMeetingWeek});
+    } finally {setSaving(false);}
+  }
+  return <div className={`ids-todo-composer ${linkedTodo?"saved":""}`}>
+    <div className="ids-todo-summary"><div><ListChecks size={18}/><span><strong>{linkedTodo?"To-Do saved":`Add a To-Do during ${sectionName}`}</strong><small>{linkedTodo?`${linkedTodo.payload.title} · Due ${dateLabel(linkedTodo.payload.dueDate)}`:`Assign a commitment for the next L10 on ${dateLabel(nextMeetingWeek)}.`}</small></span></div><button type="button" aria-expanded={open} onClick={toggleEditor}>{linkedTodo?<Pencil size={15}/>:<Plus size={15}/>} {open?"Close editor":linkedTodo?"Edit To-Do":"Add To-Do"}</button></div>
+    {savedTitle&&!open&&!linkedTodo&&<p className="meeting-todo-saved" role="status">Saved: {savedTitle}. Included in the Conclude recap.</p>}
+    {open&&<form className="ids-todo-fields" aria-label={issue?`To-Do for ${issue.payload.title}`:`Add To-Do during ${sectionName}`} onSubmit={saveTodo}>
+      <label><span>To-Do</span><input autoFocus required value={data.title} onChange={e=>setData(current=>({...current,title:e.target.value}))} placeholder="Enter the commitment"/></label>
+      <label><span>Owner</span><select required value={data.ownerId} onChange={e=>setData(current=>({...current,ownerId:e.target.value}))}><option value="">Select owner</option>{owners.map((owner:Rec)=><option key={owner.id} value={owner.id}>{owner.payload.name}</option>)}</select></label>
+      <label><span>Due date</span><input required type="date" value={data.dueDate} onChange={e=>setData(current=>({...current,dueDate:e.target.value}))}/></label>
+      <button className="primary-btn" type="submit" disabled={!data.title.trim()||!data.ownerId||!data.dueDate||saving}><Save size={15}/> {saving?"Saving…":linkedTodo?"Save changes":"Save To-Do"}</button>
+      {error&&<p className="meeting-todo-error" role="alert">{error}</p>}
+    </form>}
   </div>;
 }
 
